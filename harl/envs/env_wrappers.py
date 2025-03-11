@@ -128,7 +128,7 @@ class ShareVecEnv(ABC):
 
         This is available for backwards compatibility.
         """
-        self.step_async(actions)
+        self.step_async(actions)    # reset때와 다르게 step_async()를 먼저 실행하고, step_wait()를 실행한다.
         return self.step_wait()
 
     def render(self, mode="human"):
@@ -165,7 +165,7 @@ class ShareVecEnv(ABC):
 
 def shareworker(remote, parent_remote, env_fn_wrapper):
     parent_remote.close()
-    env = env_fn_wrapper.x()
+    env = env_fn_wrapper.x()    # env_fn_wrapper.x()는 env_fn_wrapper의 x를 실행하는 것이다. x가 애초에 init_env()를 가리키고 있었으므로 env = init_env()와 같다.
     while True:
         cmd, data = remote.recv()
         if cmd == "step":
@@ -211,7 +211,7 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
         elif cmd == "render_vulnerability":
             fr = env.render_vulnerability(data)
             remote.send((fr))
-        elif cmd == "get_num_agents":
+        elif cmd == "get_num_agents": 
             remote.send((env.n_agents))
         else:
             raise NotImplementedError
@@ -222,10 +222,15 @@ class ShareSubprocVecEnv(ShareVecEnv):
         """
         envs: list of gym environments to run in subprocesses
         """
-        self.waiting = False
-        self.closed = False
-        nenvs = len(env_fns)
-        self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
+        self.waiting = False    # whether we are waiting for the result of step
+        self.closed = False # whether the environment has been closed
+        nenvs = len(env_fns)    
+        self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])  # remotes: 메인 프로세스, work_remotes: 워커 프로세스, 즉 병렬로 돌아가는 프로세스
+        # Pipe()는 양방향으로 데이터를 주고받을 수 있는 파이프를 생성한다.
+        # nenvs만큼 Pipe()를 생성하는데 각각의 Pipe()는 (부모, 자식)으로 묶인다.
+        # 이 때 *를 붙이면 리스트 내부의 튜플들을 해체하여 각각의 요소로 만들어준다.
+        # 그걸 다시 zip()으로 묶어주면 각각의 같은 순서의 요소들끼리 묶인다.
+        # 그래서 self.remotes는 모든 파이프들의 부모들로만 구성되고, self.work_remotes는 모든 파이프들의 자식들로만 구성된다.
         self.ps = [
             Process(
                 target=shareworker,
@@ -233,36 +238,36 @@ class ShareSubprocVecEnv(ShareVecEnv):
             )
             for (work_remote, remote, env_fn) in zip(
                 self.work_remotes, self.remotes, env_fns
-            )
+            )   # 기껏 self.work_remotes와 self.remotes를 묶었는데 다시 풀어서 각각의 요소들을 묶어서 Process()에 넣어준다.
         ]
         for p in self.ps:
             p.daemon = (
                 True  # if the main process crashes, we should not cause things to hang
             )
             p.start()
-        for remote in self.work_remotes:
-            remote.close()
-        self.remotes[0].send(("get_num_agents", None))
-        self.n_agents = self.remotes[0].recv()
+        for worker_remote in self.work_remotes:
+            worker_remote.close()
+        self.remotes[0].send(("get_num_agents", None))  # 메인프로세스인 self.remotes가 허공에 "get_num_agents"를 보내고, 이걸 받은 워커프로세스는 env.n_agents를 보내준다.
+        self.n_agents = self.remotes[0].recv()  # 여기서 굳이 가장 첫번째 가상환경에서 받아도 되는 이유는 모든 가상환경이 동일한 n_agents를 가지기 때문이다.
         self.remotes[0].send(("get_spaces", None))
-        observation_space, share_observation_space, action_space = self.remotes[
-            0
-        ].recv()
+        observation_space, share_observation_space, action_space = self.remotes[0].recv()
         ShareVecEnv.__init__(
-            self, len(env_fns), observation_space, share_observation_space, action_space
-        )
+            self, len(env_fns), observation_space, share_observation_space, action_space    # 이거 대단한거 아니고 그냥 넘겨준 모든 정보들을 ShareVecEnv에 넘겨주는 것이다.
+        )   # 심지어 ShareVecEnv는 이 파일 안에 있는 다른 클래스다.
 
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(("step", action))
-        self.waiting = True
+        self.waiting = True # 환경 닫을때 이걸로 점검한다.
 
     def step_wait(self):
         results = [remote.recv() for remote in self.remotes]
         self.waiting = False
-        obs, share_obs, rews, dones, infos, available_actions = zip(*results)
+        obs, share_obs, rews, dones, infos, available_actions = zip(*results)   
+        # 리스트 내부에 2개의 튜플이 있다. 이것들을 풀어서 obs, share_obs, rews, dones, infos, available_actions로 만든다.
+        # 그리고 zip을 통해서 다시 두 환경의 obs, share_obs, rews, dones, infos, available_actions로 묶어준다.
         return (
-            np.stack(obs),
+            np.stack(obs),  # 원래 길이가 2인 튜플로 구성된 리스트를 np.stack()을 통해 (2, 3, 18)인 튜플로 바꿔준다.
             np.stack(share_obs),
             np.stack(rews),
             np.stack(dones),

@@ -191,7 +191,7 @@ def make_render_env(env_name, seed, env_args):
     elif env_name == "pettingzoo_mpe":
         from harl.envs.pettingzoo_mpe.pettingzoo_mpe_env import PettingZooMPEEnv
 
-        env = PettingZooMPEEnv({**env_args, "render_mode": "human"})
+        env = PettingZooMPEEnv({**env_args, "render_mode": "rgb_array"})    # human에서 rgb_array로 바꿈
         env.seed(seed * 60000)
     elif env_name == "gym":
         from harl.envs.gym.gym_env import GYMEnv

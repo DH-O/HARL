@@ -1,1 +1,1 @@
-python train.py --algo happo --env smac --exp_name test
+python train.py --algo hasac --env pettingzoo_mpe --exp_name min_dist_1_res_2_map_16_N_3_max_75_debug_short --use_exploration_metric 1

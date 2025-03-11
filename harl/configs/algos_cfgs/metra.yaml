@@ -1,23 +1,9 @@
-# This is the configuration file for the HASAC algorithm.
-seed:
-  # whether to use the specified seed
-  seed_specify: True
-  # seed
-  seed: 1
-device:
-  # whether to use CUDA
-  cuda: True
-  # whether to set CUDA deterministic
-  cuda_deterministic: True
-  # arg to torch.set_num_threads
-  torch_threads: 4
+# This is the configuration file for the METRA algorithm.
 train:
   # number of parallel environments for training data collection
-  n_rollout_threads: 20  # 20이 원래 값값
-  # number of total steps
-  num_env_steps: 20000 # 10^7이 원래 값이다.
+  n_rollout_threads: 20
   # number of warmup steps
-  warmup_steps: 1000 # 10^4이 원래 값이다.
+  warmup_steps: 10000
   # number of steps per train
   train_interval: 50
   # ratio of training iterations to train_interval
@@ -27,41 +13,23 @@ train:
   # evaluation interval
   eval_interval: 10000
   # whether to use ValueNorm
-  use_valuenorm: False # 나 이거 왜 굳이 False로 바꿨지? 다시 True로 바꾸고 돌려보자
+  use_valuenorm: false
   # whether to use linear learning rate decay
   use_linear_lr_decay: False
   # whether to consider the case of truncation when an episode is done
   use_proper_time_limits: True
   # if set, load models from this directory; otherwise, randomly initialise the models
   model_dir: ~
-  # /home/ka2hyeon/ext_storage_link/SSD1/MARL/HARL/examples/results/pettingzoo_mpe/simple_spread_v2-continuous/hasac/min_dist_1_res_2_map_16_N_3_max_75_debug_short/seed-00001-2025-02-14-09-45-37/models
-  
-eval:
-  # whether to use evaluation
-  use_eval: True
-  # number of parallel environments for evaluation
-  n_eval_rollout_threads: 20 # 이것도 원래 값은 20이긴 하네?
-  # number of episodes per evaluation
-  eval_episodes: 40
-render:
-  # whether to use render
-  use_render: False
-  # number of episodes to render
-  render_episodes: 10
 model:
   # network parameters
   # hidden sizes for mlp module in the network
   hidden_sizes: [256, 256]
   # activation function, choose from sigmoid, tanh, relu, leaky_relu, selu
   activation_func: relu
-  # whether to use feature normalization
-  use_feature_normalization: True
   # final activation function, choose from sigmoid, tanh, relu, leaky_relu, selu
   final_activation_func: tanh
   # initialization method for network parameters, choose from xavier_uniform_, orthogonal_, ...
   initialization_method: orthogonal_
-  # gain of the output layer of the network.
-  gain: 0.01
   # optimizer parameters
   # actor learning rate
   lr: 0.0005
@@ -69,15 +37,15 @@ model:
   critic_lr: 0.0005
 algo:
   # whether to auto-tune temperature
-  auto_alpha: True  # 얘는 또 원래 False였어 왜?
+  auto_alpha: true
   # temperature parameter
-  alpha: 0.2  # 내 생각엔 tuned config 보고 내가 바꾼 것 같다.
+  alpha: 0.2
   # alpha learning rate
   alpha_lr: 0.0003
   # discount factor
   gamma: 0.99
   # off-policy buffer size
-  buffer_size: 1000000  # 10^6
+  buffer_size: 1000000
   # training batch size
   batch_size: 1000
   # coefficient for target model soft update
@@ -85,15 +53,15 @@ algo:
   # the number of steps to look ahead
   n_step: 20
   # whether to use huber loss
-  use_huber_loss: False
+  use_huber_loss: false
   # whether to use policy active masks
   use_policy_active_masks: True
-  # huber delta
-  huber_delta: 10.0
   # whether to share parameter among actors
-  share_param: False
+  share_param: false
   # whether to use a fixed optimisation order
   fixed_order: False
-logger:
-  # logging directory
-  log_dir: "./results"
+  # skill dim
+  skill_dim: 2
+# logger:
+#   # logging directory
+#   log_dir: "./results"

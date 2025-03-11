@@ -10,7 +10,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
 
     def train(self):
         """Train the model"""
-        self.total_it += 1
+        self.total_it += 1  # train 할때마다 하나씩 증가
         data = self.buffer.sample()
         (
             sp_share_obs,  # EP: (batch_size, dim), FP: (n_agents * batch_size, dim)
@@ -27,7 +27,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
             sp_gamma,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
         ) = data
         # train critic
-        self.critic.turn_on_grad()
+        self.critic.turn_on_grad()  # 부모 클래스의 마지막(twin_continuous_q_critic.py)에 있는 메소드. grad를 하나하나 켜준다.   
         if self.args["algo"] == "hasac":
             next_actions = []
             next_logp_actions = []
@@ -72,8 +72,8 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 sp_gamma,
             )
         self.critic.turn_off_grad()
-        sp_valid_transition = torch.tensor(sp_valid_transition, device=self.device)
-        if self.total_it % self.policy_freq == 0:
+        sp_valid_transition = torch.tensor(sp_valid_transition, device=self.device) # 샘플링 된 에이전트들 생환 여부를 나타내는 텐서
+        if self.total_it % self.policy_freq == 0:   # policy_freq는 1로 설정되어 있다. 즉, 매번 policy를 업데이트 한다.
             # train actors
             if self.args["algo"] == "hasac":
                 actions = []
@@ -117,7 +117,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         actions_t = torch.tile(
                             torch.cat(actions, dim=-1), (self.num_agents, 1)
                         )
-                    value_pred = self.critic.get_values(sp_share_obs, actions_t)
+                    value_pred = self.critic.get_values(sp_share_obs, actions_t)    # 여기에 다른 에이전트들의 액션도 포함시키기 위해 아까 torch.no_grad()로 일단 액션을 먼저 구한 것
                     if self.algo_args["algo"]["use_policy_active_masks"]:
                         if self.state_type == "EP":
                             actor_loss = (
@@ -125,7 +125,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                                     (value_pred - self.alpha[agent_id] * logp_action)
                                     * sp_valid_transition[agent_id]
                                 )
-                                / sp_valid_transition[agent_id].sum()
+                                / sp_valid_transition[agent_id].sum()   # batch_size만큼의 valid_transition이 있으므로, agent_id가 모든 경우에서 이를 모두 더해주면 batch_size가 된다.
                             )
                         elif self.state_type == "FP":
                             valid_transition = torch.tile(

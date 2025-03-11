@@ -99,11 +99,11 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
         assert term.__class__.__name__ == "ndarray"
         assert next_share_obs.__class__.__name__ == "ndarray"
         assert gamma.__class__.__name__ == "ndarray"
-
+        """ 모든 에이전트들의 obs를 합친 share_obs와 모든 에이전트들의 action을 합친 actions를 만든다. """
         share_obs = check(share_obs).to(**self.tpdv)
         if self.action_type == "Box":
             actions = check(actions).to(**self.tpdv)
-            actions = torch.cat([actions[i] for i in range(actions.shape[0])], dim=-1)
+            actions = torch.cat([actions[i] for i in range(actions.shape[0])], dim=-1)  # 모든 에이전트들의 액션(5차원)들을 합친다. (15차원)
         else:
             actions = check(actions).to(**self.tpdv_a)
             one_hot_actions = []
@@ -129,7 +129,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             actions = torch.tile(actions, (self.num_agents, 1))
         reward = check(reward).to(**self.tpdv)
         done = check(done).to(**self.tpdv)
-        valid_transition = check(np.concatenate(valid_transition, axis=0)).to(
+        valid_transition = check(np.concatenate(valid_transition, axis=0)).to(  # 생존 여부만 나타내는 텐서.
             **self.tpdv
         )
         term = check(term).to(**self.tpdv)
@@ -147,8 +147,11 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             next_logp_actions = torch.tile(next_logp_actions, (self.num_agents, 1))
         next_q_values1 = self.target_critic(next_share_obs, next_actions)
         next_q_values2 = self.target_critic2(next_share_obs, next_actions)
-        next_q_values = torch.min(next_q_values1, next_q_values2)
+        next_q_values = torch.min(next_q_values1, next_q_values2)   # 여기서 min을 취해서 과대평가를 방지한다.
         if self.use_proper_time_limits:
+            # 시간 제한을 적절하게 처리할지 결정한다.
+            # 시간 제한으로 에피소드가 종결된 상황과, 실제 목표 달성이나 실패로 인한 에피소드가 종결된 상황(term = 1)을 구별지려는 것이다.
+            # 시간 제한으로 종료된 상태는 비종단(non-terminal) 상태로 간주한다.
             if value_normalizer is not None:
                 q_targets = reward + gamma * (
                     check(value_normalizer.denormalize(next_q_values)).to(**self.tpdv)

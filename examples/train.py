@@ -12,7 +12,7 @@ def main():
     parser.add_argument(
         "--algo",
         type=str,
-        default="happo",
+        default="hasac",    # 원래 기본은 happo였다.
         choices=[
             "happo",
             "hatrpo",
@@ -44,7 +44,10 @@ def main():
         help="Environment name. Choose from: smac, mamujoco, pettingzoo_mpe, gym, football, dexhands, smacv2, lag.",
     )
     parser.add_argument(
-        "--exp_name", type=str, default="installtest", help="Experiment name."
+        "--exp_name", type=str, default="debug", help="Experiment name."
+    )
+    parser.add_argument(
+        "--use_METRA", type=int, default=0, help="Use METRA for multi-agent training."
     )
     parser.add_argument(
         "--load_config",
@@ -52,6 +55,16 @@ def main():
         default="",
         help="If set, load existing experiment config file instead of reading from yaml config file.",
     )
+    
+    """ exploration metric """
+    parser.add_argument(
+        "--use_exploration_metric",
+        type=int,
+        default=0,
+        help="Use exploration metric for multi-agent training.",
+    )
+    """ exploration metric 끝"""
+    
     args, unparsed_args = parser.parse_known_args()
 
     def process(arg):

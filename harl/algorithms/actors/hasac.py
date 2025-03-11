@@ -85,5 +85,5 @@ class HASAC(OffPolicyBase):
 
     def restore(self, model_dir, id):
         """Restore the actor."""
-        actor_state_dict = torch.load(str(model_dir) + "/actor_agent" + str(id) + ".pt")
+        actor_state_dict = torch.load(str(model_dir) + "/actor_agent" + str(id) + ".pt", weights_only=True) # weights_only=True를 내가 굳이 왜 추가했을까까
         self.actor.load_state_dict(actor_state_dict)

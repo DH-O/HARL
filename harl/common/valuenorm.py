@@ -50,7 +50,8 @@ class ValueNorm(nn.Module):
             input_vector = torch.from_numpy(input_vector)
         input_vector = input_vector.to(**self.tpdv)
 
-        batch_mean = input_vector.mean(dim=tuple(range(self.norm_axes)))
+        batch_mean = input_vector.mean(dim=tuple(range(self.norm_axes)))    # 만약 norm_axes가 1이면, 첫번째 차원(배치)에 대한 평균만 구해서 결국 feature_dim 형태의 텐서가 된다.
+        # (batch_size, agent_num, feature_dim) 과 같은 경우에도 norm_axes가 2이면, 첫번째와 두번째 차원 모두에 대해 평균을 계산하므로 결과는 역시 feature_dim 형태의 텐서가 된다.
         batch_sq_mean = (input_vector**2).mean(dim=tuple(range(self.norm_axes)))
 
         if self.per_element_update:
@@ -59,7 +60,7 @@ class ValueNorm(nn.Module):
         else:
             weight = self.beta
 
-        self.running_mean.mul_(weight).add_(batch_mean * (1.0 - weight))
+        self.running_mean.mul_(weight).add_(batch_mean * (1.0 - weight))    # self.running_mean = self.running_mean * weight + batch_mean * (1.0 - weight) 이게 지수 이동 평균
         self.running_mean_sq.mul_(weight).add_(batch_sq_mean * (1.0 - weight))
         self.debiasing_term.mul_(weight).add_(1.0 * (1.0 - weight))
 
