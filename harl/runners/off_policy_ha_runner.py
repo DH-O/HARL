@@ -42,7 +42,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 )
                 next_actions.append(next_action)
                 next_logp_actions.append(next_logp_action)
-            self.critic.train(
+            critic_loss = self.critic.train(
                 sp_share_obs,
                 sp_actions,
                 sp_reward,
@@ -118,7 +118,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                             torch.cat(actions, dim=-1), (self.num_agents, 1)
                         )
                     value_pred = self.critic.get_values(sp_share_obs, actions_t)    # 여기에 다른 에이전트들의 액션도 포함시키기 위해 아까 torch.no_grad()로 일단 액션을 먼저 구한 것
-                    if self.algo_args["algo"]["use_policy_active_masks"]:
+                    if self.algo_args["algo"]["use_policy_active_masks"]:   # 이거 True
                         if self.state_type == "EP":
                             actor_loss = (
                                 -torch.sum(
@@ -147,7 +147,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     self.actor[agent_id].actor_optimizer.step()
                     self.actor[agent_id].turn_off_grad()
                     # train this agent's alpha
-                    if self.algo_args["algo"]["auto_alpha"]:
+                    if self.algo_args["algo"]["auto_alpha"]:    # 이거 True
                         log_prob = (
                             logp_actions[agent_id].detach()
                             + self.target_entropy[agent_id]
@@ -237,3 +237,4 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 for agent_id in range(self.num_agents):
                     self.actor[agent_id].soft_update()
             self.critic.soft_update()
+        return critic_loss, actor_loss, alpha_loss
