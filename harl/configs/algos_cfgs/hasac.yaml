@@ -3,7 +3,7 @@ seed:
   # whether to use the specified seed
   seed_specify: True
   # seed
-  seed: 1
+  seed: 77
 device:
   # whether to use CUDA
   cuda: True
@@ -15,9 +15,9 @@ train:
   # number of parallel environments for training data collection
   n_rollout_threads: 20  # 20이 원래 값값
   # number of total steps
-  num_env_steps: 20000 # 10^7이 원래 값이다.
+  num_env_steps: 10000000 # 10^7이 원래 값이다.
   # number of warmup steps
-  warmup_steps: 1000 # 10^4이 원래 값이다.
+  warmup_steps: 10000 # 10^4이 원래 값이다.
   # number of steps per train
   train_interval: 50
   # ratio of training iterations to train_interval
@@ -25,9 +25,9 @@ train:
   # logging interval (currently unused)
   log_interval: ~
   # evaluation interval
-  eval_interval: 10000
+  eval_interval: 10000  # 이게 기존 값
   # whether to use ValueNorm
-  use_valuenorm: False # 나 이거 왜 굳이 False로 바꿨지? 다시 True로 바꾸고 돌려보자
+  use_valuenorm: False # tuned config에 의하면 이게 맞다.
   # whether to use linear learning rate decay
   use_linear_lr_decay: False
   # whether to consider the case of truncation when an episode is done
@@ -69,7 +69,7 @@ model:
   critic_lr: 0.0005
 algo:
   # whether to auto-tune temperature
-  auto_alpha: True  # 얘는 또 원래 False였어 왜?
+  auto_alpha: True  # tuned config에 의하면 이게 맞다.
   # temperature parameter
   alpha: 0.2  # 내 생각엔 tuned config 보고 내가 바꾼 것 같다.
   # alpha learning rate

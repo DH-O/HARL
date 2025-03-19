@@ -30,58 +30,127 @@ from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
 
 def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, model_dir, map_size):
         save_dir =  model_dir + "/exploration_metric"
+        os.makedirs(save_dir, exist_ok=True)
+        # chunk_size = 3
+        max_graphs_per_row = 3
+        n_cols = min(max_graphs_per_row, n_agents)
+        n_rows = int(np.ceil(n_agents / n_cols))
+        # env_ids = list(rollout_data.keys())
         
-        chunk_size = 3
-        env_ids = list(rollout_data.keys())
-        
-        for i in range(0, n_roll_out_threads, chunk_size):
-            sub_env_ids = env_ids[i:min(i+chunk_size, n_roll_out_threads)]
-            num_sub_envs = len(sub_env_ids)
-        
-            fig, axes = plt.subplots(nrows=num_sub_envs, ncols=n_agents, figsize=(12, 4 * num_sub_envs))
+        for env_id in range(n_roll_out_threads):
+            # 각 환경별로 새로운 figure 생성
+            fig, axes = plt.subplots(
+                nrows=n_rows, 
+                ncols=n_cols, 
+                figsize=(5 * n_cols, 4 * n_rows)
+            )
             
-            # if num_sub_envs == 1:
-            #     axes = np.expand_dims(axes, axis=0)
-            
-            for row, env_id in enumerate(sub_env_ids):
-                for agent_id in range(n_agents):
-                    ax = axes[row, agent_id] if num_sub_envs > 1 else axes[agent_id]
-                    if isinstance(ax, plt.Axes):
-                        agent_traj = np.array(rollout_data[env_id][agent_id])
-                        steps = agent_traj[:, 2]
-                        norm_steps = (steps - np.min(steps)) / (np.max(steps) - np.min(steps) + 1e-8)
-                        
-                        colormap = cm.get_cmap('viridis')
-                        colors = colormap(norm_steps)
-                        
-                        ax.scatter(agent_traj[:, 0], agent_traj[:, 1], c=colors, s=10, alpha=0.7)
-                        
-                        # ax.plot(agent_traj[:, 0], agent_traj[:, 1], marker='o', color='b', linestyle='-', alpha=0.7)
-                        ax.set_title(f'env {env_id} - agent {agent_id}')
-                        ax.set_xlabel('x')
-                        ax.set_ylabel('y')
-                        ax.set_xlim(-1.2*map_size, 1.2*map_size)
-                        ax.set_ylim(-1.2*map_size, 1.2*map_size)
-                        
-                        cbar = fig.colorbar(cm.ScalarMappable(cmap=colormap), ax=ax)
-                        cbar.set_label("Step Index")
-                    else:
-                        raise ValueError('axes must be an instance of plt.Axes')
+            # axes가 1차원 배열인 경우 2차원 배열로 변환
+            if n_rows == 1 and n_cols == 1:
+                axes = np.array([[axes]])
+            elif n_rows == 1:
+                # shape: (n_cols, ) -> (1, n_cols)
+                axes = axes.reshape(1, n_cols)
+            elif n_cols == 1:
+                # shape: (n_rows, ) -> (n_rows, 1)
+                axes = axes.reshape(n_rows, 1)
+            # elif n_rows == 1 or n_cols == 1:
+            #     axes = axes.reshape(-1, 1) if n_rows == 1 else axes.reshape(1, -1)
         
+            for agent_id in range(n_agents):
+                row = agent_id // n_cols
+                col = agent_id % n_cols
+                
+                agent_traj = np.array(rollout_data[env_id][agent_id])
+                steps = agent_traj[:, 2]
+                norm_steps = (steps - np.min(steps)) / (np.max(steps) - np.min(steps) + 1e-8)
+                
+                colormap = cm.get_cmap('viridis')
+                colors = colormap(norm_steps)
+                
+                axes[row, col].scatter(agent_traj[:, 0], agent_traj[:, 1], c=colors, s=10, alpha=0.7)
+                axes[row, col].set_title(f'env {env_id} - agent {agent_id}')
+                axes[row, col].set_xlabel('x')
+                axes[row, col].set_ylabel('y')
+                axes[row, col].set_xlim(-1.2*map_size, 1.2*map_size)
+                axes[row, col].set_ylim(-1.2*map_size, 1.2*map_size)
+                
+                cbar = fig.colorbar(cm.ScalarMappable(cmap=colormap), ax=axes[row, col])
+                cbar.set_label("Step Index")
+            
+            # 사용하지 않는 subplot 제거                
+            for idx in range(n_agents, n_cols * n_rows):
+                row = idx // n_cols
+                col = idx % n_cols
+                fig.delaxes(axes[row, col])
+            
             plt.tight_layout()
-            os.makedirs(save_dir, exist_ok=True)
             
-            base_filename = f'rollout_trajectories_envs_{i//chunk_size + 1}'
+            # 파일 이름 중복 방지: 이미 존재하는 경우 숫자 추가
+            base_filename = f'rollout_trajectories_envs_{env_id}'
             file_path = os.path.join(save_dir, f'{base_filename}.png')
-            
             counter = 1
             while os.path.exists(file_path):
                 filename = f"{base_filename}_{counter}.png"
                 file_path = os.path.join(save_dir, filename)
                 counter += 1
-            
-            plt.savefig(file_path, dpi=300)
+
+            plt.savefig(file_path, dpi=300, bbox_inches='tight')
             plt.close()
+            
+            # base_filename = f'rollout_trajectories_envs_{i//chunk_size + 1}'
+            
+                
+                
+        
+        # for i in range(0, n_roll_out_threads, chunk_size):
+        #     sub_env_ids = env_ids[i:min(i+chunk_size, n_roll_out_threads)]
+        #     num_sub_envs = len(sub_env_ids)
+        
+        #     fig, axes = plt.subplots(nrows=num_sub_envs, ncols=n_agents, figsize=(12, 4 * num_sub_envs))
+            
+        #     # if num_sub_envs == 1:
+        #     #     axes = np.expand_dims(axes, axis=0)
+            
+        #     for row, env_id in enumerate(sub_env_ids):
+        #         for agent_id in range(n_agents):
+        #             ax = axes[row, agent_id] if num_sub_envs > 1 else axes[agent_id]
+        #             if isinstance(ax, plt.Axes):
+        #                 agent_traj = np.array(rollout_data[env_id][agent_id])
+        #                 steps = agent_traj[:, 2]
+        #                 norm_steps = (steps - np.min(steps)) / (np.max(steps) - np.min(steps) + 1e-8)
+                        
+        #                 colormap = cm.get_cmap('viridis')
+        #                 colors = colormap(norm_steps)
+                        
+        #                 ax.scatter(agent_traj[:, 0], agent_traj[:, 1], c=colors, s=10, alpha=0.7)
+                        
+        #                 # ax.plot(agent_traj[:, 0], agent_traj[:, 1], marker='o', color='b', linestyle='-', alpha=0.7)
+        #                 ax.set_title(f'env {env_id} - agent {agent_id}')
+        #                 ax.set_xlabel('x')
+        #                 ax.set_ylabel('y')
+        #                 ax.set_xlim(-1.2*map_size, 1.2*map_size)
+        #                 ax.set_ylim(-1.2*map_size, 1.2*map_size)
+                        
+        #                 cbar = fig.colorbar(cm.ScalarMappable(cmap=colormap), ax=ax)
+        #                 cbar.set_label("Step Index")
+        #             else:
+        #                 raise ValueError('axes must be an instance of plt.Axes')
+        
+        #     plt.tight_layout()
+        #     os.makedirs(save_dir, exist_ok=True)
+            
+        #     base_filename = f'rollout_trajectories_envs_{i//chunk_size + 1}'
+        #     file_path = os.path.join(save_dir, f'{base_filename}.png')
+            
+            # counter = 1
+            # while os.path.exists(file_path):
+            #     filename = f"{base_filename}_{counter}.png"
+            #     file_path = os.path.join(save_dir, filename)
+            #     counter += 1
+            
+            # plt.savefig(file_path, dpi=300)
+            # plt.close()
         
 class OffPolicyBaseRunner:
     """Base runner for off-policy algorithms."""
@@ -117,6 +186,7 @@ class OffPolicyBaseRunner:
 
         self.state_type = env_args.get("state_type", "EP")   # state_type이 없으면 기본값은 "EP"로 가져오란 뜻. 
         # dict.get(key, default)는 dict에 key가 있으면 dict[key]를 반환하고, 없으면 default를 반환한다.
+        # mpe의 경우 EP
         self.share_param = algo_args["algo"]["share_param"]
         self.fixed_order = algo_args["algo"]["fixed_order"]
 
@@ -376,7 +446,7 @@ class OffPolicyBaseRunner:
             share_obs = new_share_obs
             available_actions = new_available_actions
             if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습
-                if self.algo_args["train"]["use_linear_lr_decay"]:
+                if self.algo_args["train"]["use_linear_lr_decay"]:  # False
                     if self.share_param:
                         self.actor[0].lr_decay(step, steps)
                     else:
@@ -384,7 +454,10 @@ class OffPolicyBaseRunner:
                             self.actor[agent_id].lr_decay(step, steps)
                     self.critic.lr_decay(step, steps)
                 for _ in range(update_num): # update_num은 50이다.
-                    self.train()    # 여기서 HASAC의 train()이 호출된다.
+                    critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
+                    self.writter.add_scalar("critic_loss", critic_loss, step)
+                    self.writter.add_scalar("actor_loss", actor_loss, step)
+                    self.writter.add_scalar("alpha_loss", alpha_loss, step)
             if step % self.algo_args["train"]["eval_interval"] == 0:
                 cur_step = (
                     self.algo_args["train"]["warmup_steps"]
@@ -768,10 +841,12 @@ class OffPolicyBaseRunner:
                 """ Video/Gif 관련 """
                 gif_filename = f'{save_dir}/gif_episode_{episode}.gif'
                 gif_frames = []
+                video_filename = f'{save_dir}/video_episode_{episode}.mp4'
+                video_writer = None
                 
                 """ exploration metric """
                 if self.args["use_exploration_metric"]:
-                    rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
+                    rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(1)}
                     target_dim = [2, 3] # 랜드마크와 아군의 수와 상관 없이, 커서 에이전트의 위치는 2, 3에 있다.
                 """ exploration metric 끝 """
                 
@@ -801,30 +876,43 @@ class OffPolicyBaseRunner:
                     
                     """ exploration metric """
                     if self.args["use_exploration_metric"]:
-                        for env_id in range(self.n_rollout_threads):
-                            for agent_id in range(self.num_agents):
-                                xy_coords = eval_obs[env_id, agent_id, target_dim]
-                                rollout_data[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
+                        # for env_id in range(self.n_rollout_threads):
+                        for agent_id in range(self.num_agents):
+                            xy_coords = eval_obs[0, agent_id, target_dim]
+                            rollout_data[0][agent_id].append([xy_coords[0], xy_coords[1], step])
                     """ exploration metric 끝"""
                     
                     if self.manual_render:
                         frame = self.envs.render()
-                        gif_frame = frame
-                        gif_frames.append(gif_frame)
-                        
+                        gif_frames.append(frame)
                     
+                        if video_writer is None:
+                            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                            frame_height, frame_width = frame.shape[:2]
+                            video_writer = cv2.VideoWriter(
+                                video_filename,
+                                fourcc,
+                                10,
+                                (frame_width, frame_height)
+                            )
+
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        video_writer.write(frame_bgr)
+                        
                     if self.manual_delay:
                         time.sleep(0.1)
                     
                     if eval_dones[0]:
                         print(f"total reward of this episode: {rewards}")
+                        if video_writer is not None:
+                            video_writer.release()
                         break
                     step += 1
                 
                 if self.args["use_exploration_metric"]:
                     # for env_id in range(self.n_rollout_threads):
                     #     imageio.mimsave(gif_filenames[env_id], gif_frames[env_id], duration=0.1)
-                    plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, save_dir, self.env_args["map_size"])
+                    plot_rollout_trajectory(rollout_data, 1, self.num_agents, save_dir, self.env_args["map_size"])
                 imageio.mimsave(gif_filename, gif_frames, duration=0.1)
         else:
             # this env does not need manual expansion of the num_of_parallel_envs dimension

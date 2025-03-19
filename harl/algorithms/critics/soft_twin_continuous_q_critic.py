@@ -141,7 +141,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             next_actions = torch.cat(next_actions, dim=-1).to(**self.tpdv_a)
         next_logp_actions = torch.sum(
             torch.cat(next_logp_actions, dim=-1), dim=-1, keepdim=True
-        ).to(**self.tpdv)
+        ).to(**self.tpdv)   # 모든 에이전트들의 액션에 대한 log_prob을 합친다.
         if self.state_type == "FP":
             next_actions = torch.tile(next_actions, (self.num_agents, 1))
             next_logp_actions = torch.tile(next_logp_actions, (self.num_agents, 1))
@@ -149,7 +149,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
         next_q_values2 = self.target_critic2(next_share_obs, next_actions)
         next_q_values = torch.min(next_q_values1, next_q_values2)   # 여기서 min을 취해서 과대평가를 방지한다.
         if self.use_proper_time_limits:
-            # 시간 제한을 적절하게 처리할지 결정한다.
+            # 시간 제한을 적절하게 처리할지 결정한다.   (tuned config에 의하면 이게 맞다.)
             # 시간 제한으로 에피소드가 종결된 상황과, 실제 목표 달성이나 실패로 인한 에피소드가 종결된 상황(term = 1)을 구별지려는 것이다.
             # 시간 제한으로 종료된 상태는 비종단(non-terminal) 상태로 간주한다.
             if value_normalizer is not None:
@@ -162,7 +162,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             else:
                 q_targets = reward + gamma * (
                     next_q_values - self.alpha * next_logp_actions
-                ) * (1 - term)
+                ) * (1 - term)  # 이 부분이 pseudo cocde에 나와 있는 부분
         else:
             if value_normalizer is not None:
                 q_targets = reward + gamma * (
@@ -175,7 +175,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
                 q_targets = reward + gamma * (
                     next_q_values - self.alpha * next_logp_actions
                 ) * (1 - done)
-        if self.use_huber_loss:
+        if self.use_huber_loss: # 안 쓴다.
             if self.state_type == "FP" and self.use_policy_active_masks:
                 critic_loss1 = (
                     torch.sum(
@@ -241,3 +241,5 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
+        
+        return critic_loss

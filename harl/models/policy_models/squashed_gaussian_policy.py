@@ -42,10 +42,8 @@ class SquashedGaussianPolicy(nn.Module):
         )   # hidden_sizes가 리스트가 아닌 경우도 있나 보다.
         self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
-        self.act_limit = action_space.high[
-            0
-        ]  # action limit for clamping (assumes all dimensions share the same bound)    
-        # action_space: Box(0.0, 1.0, (5,), float32)인데 action_space.hiigh하면 array([1., 1., 1., 1., 1.], dtype=float32)이 나옴. 그래서 [0]을 해주는 것.
+        self.act_limit = action_space.high[0]  # action limit for clamping (assumes all dimensions share the same bound)    
+        # action_space: Box(0.0, 1.0, (5,), float32)인데 action_space.high하면 array([1., 1., 1., 1., 1.], dtype=float32)이 나옴. 그래서 [0]을 해주는 것.
         self.to(device) # nn.Module의 메소드. 모델을 device로 보냄.
 
     def forward(self, obs, stochastic=True, with_logprob=True):
@@ -85,4 +83,12 @@ class SquashedGaussianPolicy(nn.Module):
         pi_action = torch.tanh(pi_action)
         pi_action = self.act_limit * pi_action  # Scale to [-act_limit, act_limit]
 
-        return pi_action, logp_pi
+        return pi_action, logp_pi   # 쉽게쉽게 생각하면 logp_pi는 액션 a에 대한 로그 확률이다. 예를 들어 액션이 2차원이고 mu = [0.5, -0.3], std = [0.2, 0.1], pi_action = [0.4, -0.2]라면,
+        # logp_pi = -1/2 * [(0.4 - 0.5)^2 / 0.2^2 + (-0.2 + 0.3)^2 / 0.1^2] - log(2 * pi * [0.2, 0.1])
+        # = -1/2 * [0.01 / 0.04 + 0.01 / 0.01] - log(2 * pi * [0.2, 0.1])
+        # = -1/2 * [0.25 + 1] - log(2 * pi * [0.2, 0.1])
+        # = -1.125 - log(2 * pi * [0.2, 0.1])
+        # = -1.125 - log(2 * pi * 0.2) - log(2 * pi * 0.1)
+        # = -1.125 - log(2 * pi * 0.2) - log(2 * pi * 0.1)
+        # 그러니까 각 차원별로 0.4, -0.2가 나올 확률을 계산하고 거기에 로그를 취했다고 생각하자
+        # 사실 나올 확률을 계산하고 로그를 취했다기보다는, .log_prob() 메소드가 이미 나올 확률을 계산하고 거기에 로그를 취한 값을 반환한다.
