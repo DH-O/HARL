@@ -28,8 +28,8 @@ from harl.algorithms.critics import CRITIC_REGISTRY
 from harl.common.buffers.off_policy_buffer_ep import OffPolicyBufferEP
 from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
 
-def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, model_dir, map_size):
-        save_dir =  model_dir + "/exploration_metric"
+def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size):
+        save_dir =  save_dir + "/exploration_metric"
         os.makedirs(save_dir, exist_ok=True)
         # chunk_size = 3
         max_graphs_per_row = 3
@@ -97,60 +97,6 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, model_di
 
             plt.savefig(file_path, dpi=300, bbox_inches='tight')
             plt.close()
-            
-            # base_filename = f'rollout_trajectories_envs_{i//chunk_size + 1}'
-            
-                
-                
-        
-        # for i in range(0, n_roll_out_threads, chunk_size):
-        #     sub_env_ids = env_ids[i:min(i+chunk_size, n_roll_out_threads)]
-        #     num_sub_envs = len(sub_env_ids)
-        
-        #     fig, axes = plt.subplots(nrows=num_sub_envs, ncols=n_agents, figsize=(12, 4 * num_sub_envs))
-            
-        #     # if num_sub_envs == 1:
-        #     #     axes = np.expand_dims(axes, axis=0)
-            
-        #     for row, env_id in enumerate(sub_env_ids):
-        #         for agent_id in range(n_agents):
-        #             ax = axes[row, agent_id] if num_sub_envs > 1 else axes[agent_id]
-        #             if isinstance(ax, plt.Axes):
-        #                 agent_traj = np.array(rollout_data[env_id][agent_id])
-        #                 steps = agent_traj[:, 2]
-        #                 norm_steps = (steps - np.min(steps)) / (np.max(steps) - np.min(steps) + 1e-8)
-                        
-        #                 colormap = cm.get_cmap('viridis')
-        #                 colors = colormap(norm_steps)
-                        
-        #                 ax.scatter(agent_traj[:, 0], agent_traj[:, 1], c=colors, s=10, alpha=0.7)
-                        
-        #                 # ax.plot(agent_traj[:, 0], agent_traj[:, 1], marker='o', color='b', linestyle='-', alpha=0.7)
-        #                 ax.set_title(f'env {env_id} - agent {agent_id}')
-        #                 ax.set_xlabel('x')
-        #                 ax.set_ylabel('y')
-        #                 ax.set_xlim(-1.2*map_size, 1.2*map_size)
-        #                 ax.set_ylim(-1.2*map_size, 1.2*map_size)
-                        
-        #                 cbar = fig.colorbar(cm.ScalarMappable(cmap=colormap), ax=ax)
-        #                 cbar.set_label("Step Index")
-        #             else:
-        #                 raise ValueError('axes must be an instance of plt.Axes')
-        
-        #     plt.tight_layout()
-        #     os.makedirs(save_dir, exist_ok=True)
-            
-        #     base_filename = f'rollout_trajectories_envs_{i//chunk_size + 1}'
-        #     file_path = os.path.join(save_dir, f'{base_filename}.png')
-            
-            # counter = 1
-            # while os.path.exists(file_path):
-            #     filename = f"{base_filename}_{counter}.png"
-            #     file_path = os.path.join(save_dir, filename)
-            #     counter += 1
-            
-            # plt.savefig(file_path, dpi=300)
-            # plt.close()
         
 class OffPolicyBaseRunner:
     """Base runner for off-policy algorithms."""
@@ -166,18 +112,6 @@ class OffPolicyBaseRunner:
         self.algo_args = algo_args
         self.env_args = env_args
         self.n_rollout_threads =  self.algo_args["train"]["n_rollout_threads"]
-        
-        """ exploration metric """
-        # if self.args["use_exploration_metric"]:
-        #     (
-        #         _,
-        #         self.manual_render,
-        #         self.manual_expand_dims,
-        #         self.manual_delay,
-        #         self.env_num,
-        #     ) = make_render_env(args["env"], algo_args["seed"]["seed"], env_args)
-        """ exploration metric 끝 """
-        
         
         if "policy_freq" in self.algo_args["algo"]:
             self.policy_freq = self.algo_args["algo"]["policy_freq"]
@@ -329,7 +263,7 @@ class OffPolicyBaseRunner:
                     self.envs.action_space[agent_id].__class__.__name__ == "Box"
                 ):  # Differential entropy can be negative
                     self.target_entropy.append(
-                        -np.prod(self.envs.action_space[agent_id].shape)
+                        -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
                     )
                 else:  # Discrete entropy is always positive. Thus we set the max possible entropy as the target entropy
                     self.target_entropy.append(
@@ -377,19 +311,13 @@ class OffPolicyBaseRunner:
         if self.args["use_exploration_metric"]:
             rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
             target_dim = [2, 3] # 랜드마크와 아군의 수와 상관 없이, 커서 에이전트의 위치는 2, 3에 있다.
-        
-            # # Video Save Dir
-            # save_dir = self.save_dir + "/videos"
-            # os.makedirs(save_dir, exist_ok=True)
-            # gif_filenames = [f'{save_dir}/gif_env_id_{env_id}.gif' for env_id in range(self.n_rollout_threads)]
-            # gif_frames = [[] for _ in range(self.n_rollout_threads)]
-            
         """ exploration metric 끝 """
         
         for step in range(1, steps + 1):
             actions = self.get_actions(
                 obs, available_actions=available_actions, add_random=True
             )
+            
             (
                 new_obs,
                 new_share_obs,
@@ -430,17 +358,6 @@ class OffPolicyBaseRunner:
                 else None,
             )
             self.insert(data)
-            
-            """ exploration metric """
-            # if self.args["use_exploration_metric"]:
-            #     for env_id in range(self.n_rollout_threads):
-            #         if self.manual_render:
-            #             gif_frame = self.envs[env_id].get_attr("render")()
-            #             gif_frames[env_id].append(gif_frame)    
-                
-            #         if self.manual_delay:
-            #             time.sleep(0.1)
-            """ exploration metric 끝 """
             
             obs = new_obs
             share_obs = new_share_obs
@@ -487,8 +404,6 @@ class OffPolicyBaseRunner:
                 self.save()
         """ exploration metric """
         if self.args["use_exploration_metric"]:
-            # for env_id in range(self.n_rollout_threads):
-            #     imageio.mimsave(gif_filenames[env_id], gif_frames[env_id], duration=0.1)
             plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"])
         """ exploration metric 끝 """
         
@@ -831,7 +746,7 @@ class OffPolicyBaseRunner:
         print("start rendering")
         
         """ Video Save Dir """
-        save_dir = self.algo_args["train"]["model_dir"] + "/videos"
+        save_dir = self.algo_args["train"]["model_dir"] + "/videos" + f"/map_size_{self.env_args['map_size']}" + f"/max_cycles_{self.env_args['max_cycles']}" + f"/seed_{self.algo_args['seed']['seed']}"
         os.makedirs(save_dir, exist_ok=True)
         
         if self.manual_expand_dims: # true
@@ -839,9 +754,19 @@ class OffPolicyBaseRunner:
             for episode in range(self.algo_args["render"]["render_episodes"]):
                 
                 """ Video/Gif 관련 """
-                gif_filename = f'{save_dir}/gif_episode_{episode}.gif'
+                base_gif_filename = os.path.join(save_dir, f'gif_episode_{episode}')
+                base_video_filename = os.path.join(save_dir, f'video_episode_{episode}')
+                gif_counter = 1
+                video_counter = 1
+                while os.path.exists(f'{base_gif_filename}.gif'):
+                    base_gif_filename = os.path.join(save_dir, f'gif_episode_{episode}_{gif_counter}')
+                    gif_counter += 1
+                
+                while os.path.exists(f'{base_video_filename}.mp4'):
+                    base_video_filename = os.path.join(save_dir, f'video_episode_{episode}_{video_counter}')
+                    video_counter += 1
+                
                 gif_frames = []
-                video_filename = f'{save_dir}/video_episode_{episode}.mp4'
                 video_writer = None
                 
                 """ exploration metric """
@@ -890,7 +815,7 @@ class OffPolicyBaseRunner:
                             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                             frame_height, frame_width = frame.shape[:2]
                             video_writer = cv2.VideoWriter(
-                                video_filename,
+                                f'{base_video_filename}.mp4',
                                 fourcc,
                                 10,
                                 (frame_width, frame_height)
@@ -913,7 +838,7 @@ class OffPolicyBaseRunner:
                     # for env_id in range(self.n_rollout_threads):
                     #     imageio.mimsave(gif_filenames[env_id], gif_frames[env_id], duration=0.1)
                     plot_rollout_trajectory(rollout_data, 1, self.num_agents, save_dir, self.env_args["map_size"])
-                imageio.mimsave(gif_filename, gif_frames, duration=0.1)
+                imageio.mimsave(f'{base_gif_filename}.gif', gif_frames, duration=0.1)
         else:
             # this env does not need manual expansion of the num_of_parallel_envs dimension
             # such as dexhands, which instantiates a parallel env of 64 pair of hands

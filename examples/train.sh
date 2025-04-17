@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name MD_A_1_L_065_RL_200_max_1200_N_3_t_10_7_CR --use_exploration_metric 1
+python train.py --algo hasac --env pettingzoo_mpe --exp_name MD_A_1_L_065_RL_2_max_120_N_3_t_50_7_SR --use_exploration_metric 1

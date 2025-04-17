@@ -149,7 +149,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     # train this agent's alpha
                     if self.algo_args["algo"]["auto_alpha"]:    # 이거 True
                         log_prob = (
-                            logp_actions[agent_id].detach()
+                            logp_actions[agent_id].detach() # 확률밀도 함수의 로그값
                             + self.target_entropy[agent_id]
                         )
                         alpha_loss = -(self.log_alpha[agent_id] * log_prob).mean()
@@ -169,7 +169,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     )
                 # train critic's alpha
                 if self.algo_args["algo"]["auto_alpha"]:
-                    self.critic.update_alpha(logp_actions, np.sum(self.target_entropy))
+                    self.critic.update_alpha(logp_actions, np.sum(self.target_entropy)) # 이건 agnet_wise로 하면 안 되니까 np.sum()하는거다.
             else:
                 if self.args["algo"] == "had3qn":
                     actions = []

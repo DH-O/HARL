@@ -49,7 +49,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             .detach()
             .to(**self.tpdv)
             + target_entropy
-        )
+        ) # torch.cat(logp_actions, dim=-1)은 모든 에이전트들의 log_prob을 합친 것. 그래서 [1000, 3]이 되며, 이것을 또 dim = -1로 합치면 [1000, ]이 되야하는데 keepdim=True를 해서 [1000, 1]이 된다. 사실 keepdim=True를 안해도 되긴 한다.
         alpha_loss = -(self.log_alpha * log_prob).mean()
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()

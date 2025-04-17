@@ -72,8 +72,9 @@ class SquashedGaussianPolicy(nn.Module):
             # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
             # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1, keepdim=True)    
-            # 액션 a (=pi_action)가 각 차원별로 독립적이라고 가정하면, 전체 로그 a 확률은 개별 차원의 로그 확률의 합과 같다. (p(a_1) * ... * p(a_n) = p(a))
-            #.log_prob()은 -1/2 * (a - mu)^2 / sigma^2 - log(2 * pi * sigma)를 반환한다. 이는 log(p(a))와 같다.
+            # 액션 a (=pi_action)가 각 차원별로 독립적이라고 가정하면, 전체 로그 a 확률은 개별 차원 액션 단일값의 확률 밀도 함수에 로그를 씌운 값의 합과 같다. 
+            # (pdf(a_1) * ... * pdf(a_n) = pdf(a))
+            #.log_prob()은 -1/2 * (a - mu)^2 / sigma^2 - log(2 * pi * sigma)를 반환한다. 이는 log(pdf(a))와 같다.
             logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(
                 axis=1, keepdim=True
             )   # F.softplus(x) = log(1 + exp(x))이다. 이건 ReLU와 비슷한데, x가 큰 음수일 때 0으로 수렴하는 것이 아니라 x로 수렴한다.
@@ -84,11 +85,5 @@ class SquashedGaussianPolicy(nn.Module):
         pi_action = self.act_limit * pi_action  # Scale to [-act_limit, act_limit]
 
         return pi_action, logp_pi   # 쉽게쉽게 생각하면 logp_pi는 액션 a에 대한 로그 확률이다. 예를 들어 액션이 2차원이고 mu = [0.5, -0.3], std = [0.2, 0.1], pi_action = [0.4, -0.2]라면,
-        # logp_pi = -1/2 * [(0.4 - 0.5)^2 / 0.2^2 + (-0.2 + 0.3)^2 / 0.1^2] - log(2 * pi * [0.2, 0.1])
-        # = -1/2 * [0.01 / 0.04 + 0.01 / 0.01] - log(2 * pi * [0.2, 0.1])
-        # = -1/2 * [0.25 + 1] - log(2 * pi * [0.2, 0.1])
-        # = -1.125 - log(2 * pi * [0.2, 0.1])
-        # = -1.125 - log(2 * pi * 0.2) - log(2 * pi * 0.1)
-        # = -1.125 - log(2 * pi * 0.2) - log(2 * pi * 0.1)
         # 그러니까 각 차원별로 0.4, -0.2가 나올 확률을 계산하고 거기에 로그를 취했다고 생각하자
-        # 사실 나올 확률을 계산하고 로그를 취했다기보다는, .log_prob() 메소드가 이미 나올 확률을 계산하고 거기에 로그를 취한 값을 반환한다.
+        # .log_prob() 메소드가 이미 나올 확률을 계산하고 거기에 로그를 취한 값을 반환한다.
