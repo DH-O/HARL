@@ -47,9 +47,6 @@ def main():
         "--exp_name", type=str, default="debug", help="Experiment name."
     )
     parser.add_argument(
-        "--use_METRA", type=int, default=0, help="Use METRA for multi-agent training."
-    )
-    parser.add_argument(
         "--load_config",
         type=str,
         default="",
@@ -65,6 +62,14 @@ def main():
     )
     """ exploration metric 끝"""
     
+    """ TDD """
+    parser.add_argument(
+        "--use_tdd",
+        type=int,
+        default=0,
+        help="Use Temporal Difference Distance for multi-agent training.",
+    )
+    """ TDD 끝 """
     args, unparsed_args = parser.parse_known_args()
 
     def process(arg):
@@ -85,8 +90,10 @@ def main():
         algo_args = all_config["algo_args"]
         env_args = all_config["env_args"]
     else:  # load config from corresponding yaml file
-        algo_args, env_args = get_defaults_yaml_args(args["algo"], args["env"])
-    update_args(unparsed_dict, algo_args, env_args)  # update args from command line
+        """ TDD 관련 추가함"""
+        algo_args, env_args, tdd_args = get_defaults_yaml_args(args["algo"], args["env"], args["use_tdd"])
+    update_args(unparsed_dict, algo_args, env_args, tdd_args)  # update args from command line
+    """ TDD 관련 추가함 끝"""
 
     if args["env"] == "dexhands":
         import isaacgym  # isaacgym has to be imported before PyTorch
@@ -99,7 +106,7 @@ def main():
     # start training
     from harl.runners import RUNNER_REGISTRY
 
-    runner = RUNNER_REGISTRY[args["algo"]](args, algo_args, env_args)
+    runner = RUNNER_REGISTRY[args["algo"]](args, algo_args, env_args, tdd_args)
     runner.run()
     runner.close()
 

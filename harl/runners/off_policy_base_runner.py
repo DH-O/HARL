@@ -27,6 +27,9 @@ from harl.algorithms.actors import ALGO_REGISTRY
 from harl.algorithms.critics import CRITIC_REGISTRY
 from harl.common.buffers.off_policy_buffer_ep import OffPolicyBufferEP
 from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
+""" TDD 관련 """
+from harl.runners.tdd_runner import TddRunner
+""" TDD 관련 끝 """
 
 def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size):
         save_dir =  save_dir + "/exploration_metric"
@@ -97,11 +100,11 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir
 
             plt.savefig(file_path, dpi=300, bbox_inches='tight')
             plt.close()
-        
+ 
 class OffPolicyBaseRunner:
     """Base runner for off-policy algorithms."""
 
-    def __init__(self, args, algo_args, env_args):
+    def __init__(self, args, algo_args, env_args, tdd_args):
         """Initialize the OffPolicyBaseRunner class.
         Args:
             args: command-line arguments parsed by argparse. Three keys: algo, env, exp_name.
@@ -111,6 +114,7 @@ class OffPolicyBaseRunner:
         self.args = args
         self.algo_args = algo_args
         self.env_args = env_args
+        
         self.n_rollout_threads =  self.algo_args["train"]["n_rollout_threads"]
         
         if "policy_freq" in self.algo_args["algo"]:
@@ -140,6 +144,8 @@ class OffPolicyBaseRunner:
             self.log_file = open(
                 os.path.join(self.run_dir, "progress.txt"), "w", encoding="utf-8"
             )
+        
+        # 프로세스 이름 설정
         setproctitle.setproctitle(
             str(args["algo"]) + "-" + str(args["env"]) + "-" + str(args["exp_name"])
         )
@@ -183,6 +189,12 @@ class OffPolicyBaseRunner:
         print("observation_space: ", self.envs.observation_space)
         print("action_space: ", self.envs.action_space)
 
+        """ TDD 관련 """
+        self.tdd_args = tdd_args
+        if self.tdd_args is not None:
+            self.tdd = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, self.log_dir)
+        """ TDD 관련 끝 """
+        
         if self.share_param:
             self.actor = []
             agent = ALGO_REGISTRY[args["algo"]](
@@ -221,7 +233,8 @@ class OffPolicyBaseRunner:
                 self.state_type,
                 device=self.device,
             )
-            if self.state_type == "EP":
+
+            if self.state_type == "EP": # MPE의 경우 EP
                 self.buffer = OffPolicyBufferEP(
                     {**algo_args["train"], **algo_args["model"], **algo_args["algo"]},
                     self.envs.share_observation_space[0],
@@ -253,6 +266,7 @@ class OffPolicyBaseRunner:
 
         self.total_it = 0  # total iteration
 
+        # 알파 값 설정
         if (
             "auto_alpha" in self.algo_args["algo"].keys()
             and self.algo_args["algo"]["auto_alpha"]
@@ -285,6 +299,7 @@ class OffPolicyBaseRunner:
         elif "alpha" in self.algo_args["algo"].keys():
             self.alpha = [self.algo_args["algo"]["alpha"]] * self.num_agents
         
+        
     def run(self):
         """Run the training (or rendering) pipeline."""
         if self.algo_args["render"]["use_render"]:  # render, not train
@@ -293,7 +308,11 @@ class OffPolicyBaseRunner:
         self.train_episode_rewards = np.zeros(
             self.n_rollout_threads
         )
+        
+        """ 이거 뭔가 목적이 있어서 추가했던 것 같은데 뭐였지? """
         self.done_episodes_rewards = []
+        """ 음? """
+        
         # warmup
         print("start warmup")
         obs, share_obs, available_actions = self.warmup()
@@ -427,12 +446,17 @@ class OffPolicyBaseRunner:
                 infos,
                 new_available_actions,
             ) = self.envs.step(actions) # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
+            
+            # if self.tdd_args is not None:
+            #     self.tdd.rollout_buffer.add_observation(new_obs)
+            
+            
             next_obs = new_obs.copy()
             next_share_obs = new_share_obs.copy()
             next_available_actions = new_available_actions.copy()
             data = (
                 share_obs,
-                obs.transpose(1, 0, 2), # 리플레이 버퍼에 데이터를 저장할 때, 에이전트 단위로 데이터를 저장하기 위함
+                obs.transpose(1, 0, 2), # 리플레이 버퍼에 데이터를 저장할 때, 에이전트 단위로 데이터를 저장하기 위함    # 롤아웃 버퍼도 저렇게 해야하는지 좀 고민이 되긴 하다
                 actions.transpose(1, 0, 2),
                 available_actions.transpose(1, 0, 2)
                 if len(np.array(available_actions).shape) == 3
@@ -450,6 +474,35 @@ class OffPolicyBaseRunner:
             obs = new_obs
             share_obs = new_share_obs
             available_actions = new_available_actions
+            
+        """ TDD update """
+        if self.tdd_args is not None:
+            # TDD 모델 업데이트
+            self.tdd.tdd_model.update()
+            
+            # 환경 리셋
+            obs, _, _ = self.envs.reset()
+            # 에이전트의 위치만 추출 (x, y 좌표)
+            agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
+            
+            # 각 에이전트별로 거리 맵 생성
+            for agent_id in range(self.num_agents):
+                # 현재 에이전트의 위치를 목표로 설정
+                goal_pos = agent_positions[0, agent_id]  # 첫 번째 환경의 에이전트 위치 사용
+                
+                # 랜드마크와 장애물 정보 가져오기
+                self.envs.remotes[0].send(("get_landmarks_and_obstacles", None))
+                landmarks, obstacles = self.envs.remotes[0].recv()
+                
+                # 거리 맵 생성
+                self.tdd.tdd_model.plot_distance_map(goal_pos, self.env_args["map_size"], landmarks, obstacles)
+            
+            # representation learning 확인을 위해 여기서 강제 종료
+            import sys
+            print("Representation learning 완료. 거리 맵이 생성되었습니다.")
+            sys.exit(0)
+        """ TDD update 끝 """
+        
         return obs, share_obs, available_actions
 
     def insert(self, data):
@@ -460,7 +513,7 @@ class OffPolicyBaseRunner:
             available_actions,  # None or (n_agents, n_threads, action_number)
             rewards,  # (n_threads, n_agents, 1)
             dones,  # (n_threads, n_agents)
-            infos,  # type: list, shape: (n_threads, n_agents)
+            infos,  # type: list, shape: (n_threads, n_agents). 초기에는 보통 비어져 있다.
             next_share_obs,  # (n_threads, n_agents, next_share_obs_dim)
             next_obs,  # (n_threads, n_agents, next_obs_dim)
             next_available_actions,  # None or (n_agents, n_threads, next_action_number)
@@ -468,7 +521,7 @@ class OffPolicyBaseRunner:
 
         dones_env = np.all(dones, axis=1)  # if all agents are done, then env is done
         reward_env = np.mean(rewards, axis=1).flatten() # 각 환경 별로 3개의 에이전트들의 리워드를 axis=1 방향으로 평균을 내고, flatten()으로 1차원으로 펴준다. 결국 (2,)차원이 된다.
-        self.train_episode_rewards += reward_env    # 어차피 한 에피소드 기준으로 다 더하는 것이다.
+        self.train_episode_rewards += reward_env    # 어차피 한 에피소드 기준으로 다 더하는 것이다. 지금 당장에는 insert 불러질때마다 더하는 것
 
         # valid_transition denotes whether each transition is valid or not (invalid if corresponding agent is dead)
         valid_transitions = 1 - self.agent_deaths   # shape: (n_threads, n_agents, 1)
@@ -482,7 +535,7 @@ class OffPolicyBaseRunner:
                 if dones_env[i]:
                     if not (
                         "bad_transition" in infos[i][0].keys()
-                        and infos[i][0]["bad_transition"] == True   # bad_transition이 True면 terms[i]는 False로 남아있게 된다.
+                        and infos[i][0]["bad_transition"] == True   # dones_env[i인데 bad_transition일 경우, infos[i][0]["bad_transition"]이 True로 바뀌어있을 것이다. 그럴 때는 terms[i]가 False로 남아있게 된다.
                     ):
                         terms[i][0] = True  # bad_transition이 아니라서 제대로 terminate된 경우에만 terms[i]는 True로 바뀐다.
         elif self.state_type == "FP":   # Full Perspective
@@ -501,15 +554,15 @@ class OffPolicyBaseRunner:
 
         for i in range(self.n_rollout_threads):
             if dones_env[i]:
-                self.done_episodes_rewards.append(self.train_episode_rewards[i])
+                self.done_episodes_rewards.append(self.train_episode_rewards[i])    # self.done_episodes_rewards는 처음엔 그냥 빈 리스트. 계속 append.
                 self.train_episode_rewards[i] = 0   # 다음 에피소드를 위해 해당 환경의 train_episode_rewards를 0으로 초기화한다.
                 self.agent_deaths = np.zeros(
                     (self.n_rollout_threads, self.num_agents, 1)
                 )
                 if "original_obs" in infos[i][0]:
-                    next_obs[i] = infos[i][0]["original_obs"].copy()    # i번째 환경에서 모든 에이전트의 reset()된 직후 초기 obs들을 저기에 넣는다.
+                    next_obs[i] = infos[i][0]["original_obs"].copy()    # i번째 환경에서 모든 에이전트가 끝났을 때의 다음 obs들을 저기에 넣는다. shape: (n_threads, n_agents, obs_dim)
                 if "original_state" in infos[i][0]:
-                    next_share_obs[i] = infos[i][0]["original_state"].copy()
+                    next_share_obs[i] = infos[i][0]["original_state"].copy()    # shape: (n_threads, n_agents, share_obs_dim), 솔직히 next_obs[i]와 다를게 거의 없다.
 
         if self.state_type == "EP":
             data = (
@@ -536,11 +589,19 @@ class OffPolicyBaseRunner:
                 valid_transitions.transpose(1, 0, 2),  # (n_agents, n_threads, 1)
                 terms,  # (n_threads, n_agents, 1)
                 next_share_obs,  # (n_threads, n_agents, next_share_obs_dim)
-                next_obs.transpose(1, 0, 2),  # (n_agents, n_threads, next_obs_dim)
+                next_obs.transpose(1, 0, 2),  # 트랜스포즈 거치면 (n_agents, n_threads, next_obs_dim)
                 next_available_actions,  # None or (n_agents, n_threads, next_action_number)
             )
 
         self.buffer.insert(data)
+        """ TDD update """
+        if self.tdd_args is not None:
+            extracted_obs = obs[:, :, 2:4] # 에이전트 개인의 절대 좌표만 뽑기
+            extracted_next_obs = next_obs[:, :, 2:4] # 에이전트 개인의 절대 좌표만 뽑기
+            self.tdd.rollout_buffer.add_observation({"obs": extracted_obs, "next_obs": extracted_next_obs.transpose(1, 0, 2)})
+            if np.any(np.all(dones, axis=1)):
+                self.tdd.rollout_buffer.end_rollout()
+        """ TDD update 끝 """
 
     def sample_actions(self, available_actions=None):
         """Sample random actions for warmup.
@@ -751,6 +812,9 @@ class OffPolicyBaseRunner:
         
         if self.manual_expand_dims: # true
             # this env needs manual expansion of the num_of_parallel_envs dimension
+            episode_rewards = []
+            agent_wise_rewards = []
+            
             for episode in range(self.algo_args["render"]["render_episodes"]):
                 
                 """ Video/Gif 관련 """
@@ -779,6 +843,8 @@ class OffPolicyBaseRunner:
                 eval_obs = np.expand_dims(np.array(eval_obs), axis=0)
                 eval_available_actions = np.array([eval_available_actions])
                 rewards = 0
+                step_rewards = []
+                agent_wise_rewards = [[0] for _ in range(self.num_agents)]
                 
                 step = 1
                 while True:
@@ -795,9 +861,11 @@ class OffPolicyBaseRunner:
                         _,
                         eval_available_actions,
                     ) = self.envs.step(eval_actions[0])
-                    rewards += eval_rewards[0][0]
+                    step_reward = eval_rewards[0][0]
+                    rewards += step_reward
                     eval_obs = np.expand_dims(np.array(eval_obs), axis=0)
                     eval_available_actions = np.array([eval_available_actions])
+                    step_rewards.append(step_reward)  # 스텝별 리워드 저장
                     
                     """ exploration metric """
                     if self.args["use_exploration_metric"]:
@@ -806,9 +874,26 @@ class OffPolicyBaseRunner:
                             xy_coords = eval_obs[0, agent_id, target_dim]
                             rollout_data[0][agent_id].append([xy_coords[0], xy_coords[1], step])
                     """ exploration metric 끝"""
+
+                    for agent_id in range(self.num_agents):
+                        agent_wise_rewards[agent_id].append(eval_rewards[0][agent_id])
                     
                     if self.manual_render:
                         frame = self.envs.render()
+                        
+                        frame_with_rewards = frame.copy()
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        font_scale = 0.5
+                        font_color = (255, 255, 255)
+                        line_type = 2
+                        
+                        cv2.putText(frame_with_rewards, f"Total Reward: {rewards:.2f}", (10, 30), font, font_scale, font_color, line_type)
+                        
+                        for agent_id in range(self.num_agents):
+                            agent_reward = eval_rewards[0][agent_id]
+                            cv2.putText(frame_with_rewards, f"Agent {agent_id} Reward: {agent_reward:.2f}", 
+                                        (10, 60 + agent_id * 30), font, font_scale, font_color, line_type)
+                        
                         gif_frames.append(frame)
                     
                         if video_writer is None:
@@ -829,16 +914,53 @@ class OffPolicyBaseRunner:
                     
                     if eval_dones[0]:
                         print(f"total reward of this episode: {rewards}")
+                        
                         if video_writer is not None:
                             video_writer.release()
                         break
                     step += 1
                 
                 if self.args["use_exploration_metric"]:
-                    # for env_id in range(self.n_rollout_threads):
-                    #     imageio.mimsave(gif_filenames[env_id], gif_frames[env_id], duration=0.1)
                     plot_rollout_trajectory(rollout_data, 1, self.num_agents, save_dir, self.env_args["map_size"])
                 imageio.mimsave(f'{base_gif_filename}.gif', gif_frames, duration=0.1)
+        
+            # 모든 에피소드가 끝난 후 리워드 그래프 그리기
+            plt.figure(figsize=(10, 6))
+            for i, rewards in enumerate(episode_rewards):
+                plt.plot(rewards, label=f'Episode {i+1}')
+            
+            plt.title('Reward per Step for Each Episode')
+            plt.xlabel('Step')
+            plt.ylabel('Reward')
+            plt.legend()
+            plt.grid(True)
+            
+            # 그래프 저장
+            reward_plot_path = os.path.join(save_dir, 'reward_plot.png')
+            plt.savefig(reward_plot_path)
+            plt.close()
+            
+            # 평균 리워드 그래프
+            plt.figure(figsize=(10, 6))
+            mean_rewards = np.mean(episode_rewards, axis=0)
+            std_rewards = np.std(episode_rewards, axis=0)
+            
+            plt.plot(mean_rewards, label='Mean Reward')
+            plt.fill_between(range(len(mean_rewards)), 
+                            mean_rewards - std_rewards, 
+                            mean_rewards + std_rewards, 
+                            alpha=0.2)
+            
+            plt.title('Mean Reward per Step with Standard Deviation')
+            plt.xlabel('Step')
+            plt.ylabel('Reward')
+            plt.legend()
+            plt.grid(True)
+            
+            # 평균 리워드 그래프 저장
+            mean_reward_plot_path = os.path.join(save_dir, 'mean_reward_plot.png')
+            plt.savefig(mean_reward_plot_path)
+            plt.close()
         else:
             # this env does not need manual expansion of the num_of_parallel_envs dimension
             # such as dexhands, which instantiates a parallel env of 64 pair of hands

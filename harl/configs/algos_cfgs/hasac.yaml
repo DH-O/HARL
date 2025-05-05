@@ -15,7 +15,7 @@ train:
   # number of parallel environments for training data collection
   n_rollout_threads: 20  # 20이 원래 값값
   # number of total steps
-  num_env_steps: 10000000 # 10^7이 원래 값이다.
+  num_env_steps: 1000000 # 10^7이 원래 값이다.
   # number of warmup steps
   warmup_steps: 10000 # 10^4이 원래 값이다.
   # number of steps per train

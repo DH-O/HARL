@@ -213,6 +213,21 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
             remote.send((fr))
         elif cmd == "get_num_agents": 
             remote.send((env.n_agents))
+        elif cmd == "get_landmarks_and_obstacles":
+            landmarks = []
+            obstacles = []
+            for entity in env.env.aec_env.env.env.env.env.world.landmarks:
+                if entity.name == 'wall':
+                    obstacles.append({
+                        'position': entity.state.p_pos,
+                        'size': entity.size
+                    })
+                else:
+                    landmarks.append({
+                        'position': entity.state.p_pos,
+                        'size': entity.size
+                    })
+            remote.send((landmarks, obstacles))
         else:
             raise NotImplementedError
 
@@ -342,8 +357,8 @@ class ShareDummyVecEnv(ShareVecEnv):
                 if np.all(
                     done
                 ):  # if done, save the original obs, state, and available actions in info, and then reset
-                    infos[i][0]["original_obs"] = copy.deepcopy(obs[i])
-                    infos[i][0]["original_state"] = copy.deepcopy(share_obs[i])
+                    infos[i][0]["original_obs"] = copy.deepcopy(obs[i]) # 이거는 0번째 에이전트의 obs_0, 1번째 에이전트의 obs_1이 저장 된다.
+                    infos[i][0]["original_state"] = copy.deepcopy(share_obs[i]) # 이거는 obs_0 + obs_1... 이 모든 에이전트에 저장된다.
                     infos[i][0]["original_avail_actions"] = copy.deepcopy(
                         available_actions[i]
                     )

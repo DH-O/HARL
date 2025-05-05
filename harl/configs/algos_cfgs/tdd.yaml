@@ -1,0 +1,87 @@
+# This is the configuration file for the TDD algorithm.
+
+# Network Architecture Parameters
+network:
+  # input feature dimension
+  input_dim: 2
+  # latent dimension
+  latents_dim: 128
+  # output dimension
+  output_dim: 64
+  # activation function
+  activation_function: relu
+
+
+# Training Parameters
+train:
+  # total number of training steps
+  total_steps: 200
+  # batch size for training
+  batch_size: 256
+  # logging interval
+  logging_interval: 100 
+  # buffer size
+  # buffer_size: 10000
+  # reward update frequency
+  # reward_update_freq: 4
+  # learning rate
+  learning_rate: 3e-4
+  # maximum gradient norm
+  max_grad_norm: 0.5
+  # # use weight decay schedule
+  # use_weight_decay_schedule: True
+  # # weight decay
+  # weight_decay: 1e-5
+  # regularization interval
+  # regularization_interval: 50
+  # temperature
+  temperature: 1.0
+  # # normalize intrinsic reward
+  # normalize_intrinsic_reward: False
+  # # adaptive grad norm
+  # adaptive_grad_norm: True
+  # # initial grad norm
+  # initial_grad_norm: 0.5
+  # # final grad norm
+  # final_grad_norm: 1.5
+  # # grad norm decay rate
+  # grad_norm_decay: 0.999
+  # # grad norm max
+  # grad_norm_max: 10.0
+  
+  # maximum history length
+  # max_history_length: 50
+
+# TDD-specific Parameters
+tdd:
+  # # whether to use batch computation
+  # batch_compute: False
+  # # whether to use vectorized distance calculation
+  # vectorized_distance: True
+  # # whether to process history in parallel
+  # parallel_history_processing: False
+  # TDD discount factor
+  tdd_discount: 0.99
+  # if we use constant TDD weight
+  tdd_weight: 0.001
+  # whether to use adaptive TDD weight
+  adaptive_tdd_weight: True
+  # minimum TDD weight
+  tdd_weight_min: 0.0001
+  # maximum TDD weight
+  tdd_weight_max: 0.01
+  # TDD weight decay rate
+  tdd_weight_decay: 0.9995
+  # TDD weight increase rate
+  tdd_weight_increase: 1.001
+
+# Memory Management Parameters
+memory:
+  # whether to use auto memory management
+  auto_memory_management: True
+  # memory logging interval
+  memory_log_interval: 1000
+  # feature cache size
+  feature_cache_size: 1000
+  # distance cache size
+  distance_cache_size: 1000 
