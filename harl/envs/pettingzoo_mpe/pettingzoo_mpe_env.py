@@ -35,8 +35,8 @@ class PettingZooMPEEnv:
         self.n_agents = self.env.num_agents
         self.agents = self.env.agents
         self.share_observation_space = self.repeat(self.env.state_space)    # 전역 state_space를 self.n_agents만큼 반복해서 저장
-        self.observation_space = self.unwrap(self.env.observation_spaces)    # 각 agent의 observation_space를 하나의 리스트로 저장
-        self.action_space = self.unwrap(self.env.action_spaces)              # 각 agent의 action_space를 하나의 리스트로 저장
+        self.observation_space = self.unwrap([self.env.observation_space(agent) for agent in self.agents])    # 각 agent의 observation_space를 하나의 리스트로 저장
+        self.action_space = self.unwrap([self.env.action_space(agent) for agent in self.agents])              # 각 agent의 action_space를 하나의 리스트로 저장
         self._seed = 0
 
     def step(self, actions):
@@ -105,10 +105,13 @@ class PettingZooMPEEnv:
         return d
 
     def unwrap(self, d):
-        l = []
-        for agent in self.agents:
-            l.append(d[agent])
-        return l
+        if isinstance(d, dict):
+            l = []
+            for agent in self.agents:
+                l.append(d[agent])
+            return l
+        else:
+            return d
 
     def repeat(self, a):
         return [a for _ in range(self.n_agents)]

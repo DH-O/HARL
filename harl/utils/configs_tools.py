@@ -6,7 +6,7 @@ import yaml
 from uu import Error
 
 
-def get_defaults_yaml_args(algo, env):
+def get_defaults_yaml_args(algo, env, use_tdd=1):
     """Load config file for user-specified algo and env.
     Args:
         algo: (str) Algorithm name.
@@ -18,12 +18,17 @@ def get_defaults_yaml_args(algo, env):
     base_path = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
     algo_cfg_path = os.path.join(base_path, "configs", "algos_cfgs", f"{algo}.yaml")
     env_cfg_path = os.path.join(base_path, "configs", "envs_cfgs", f"{env}.yaml")
+    tdd_cfg_path = os.path.join(base_path, "configs", "algos_cfgs", f"tdd.yaml")
 
     with open(algo_cfg_path, "r", encoding="utf-8") as file:
         algo_args = yaml.load(file, Loader=yaml.FullLoader)
     with open(env_cfg_path, "r", encoding="utf-8") as file:
         env_args = yaml.load(file, Loader=yaml.FullLoader)
-    return algo_args, env_args
+    if use_tdd:
+        with open(tdd_cfg_path, "r", encoding="utf-8") as file:
+            tdd_args = yaml.load(file, Loader=yaml.FullLoader)
+        return algo_args, env_args, tdd_args
+    return algo_args, env_args, None
 
 
 def update_args(unparsed_dict, *args):
