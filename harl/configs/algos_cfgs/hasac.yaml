@@ -15,9 +15,9 @@ train:
   # number of parallel environments for training data collection
   n_rollout_threads: 20  # 20이 원래 값값
   # number of total steps
-  num_env_steps: 1000000 # 10^7이 원래 값이다.
+  num_env_steps: 10000000 # 10^7이 원래 값이다.
   # number of warmup steps
-  warmup_steps: 10000 # 10^4이 원래 값이다.
+  warmup_steps: 50000 # 10^4이 원래 값이다.
   # number of steps per train
   train_interval: 50
   # ratio of training iterations to train_interval
@@ -34,7 +34,7 @@ train:
   use_proper_time_limits: True
   # if set, load models from this directory; otherwise, randomly initialise the models
   model_dir: ~
-  # /home/ka2hyeon/ext_storage_link/SSD1/MARL/HARL/examples/results/pettingzoo_mpe/simple_spread_v2-continuous/hasac/min_dist_1_res_2_map_16_N_3_max_75_debug_short/seed-00001-2025-02-14-09-45-37/models
+  # /home/ka2hyeon/ext_storage_link/SSD1/MARL/HARL/examples/results/pettingzoo_mpe/simple_spread_v2-continuous/hasac/Map_8_Max_100_N_2/seed-00077-2025-05-13-00-20-35/models
   
 eval:
   # whether to use evaluation

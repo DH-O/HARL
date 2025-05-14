@@ -1,10 +1,15 @@
-"""TDD Intrinsic Reward Model for multi-agent environments"""
+"""TDD Intrinsic Reward Model for multi-agent environments with Hard‑Negative Mining (HNM)
+및 Positive Sampling Restriction (PSR) 근데 PSR은 안 쓰는게 좋겠다."""
+
+
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+import math
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -111,66 +116,98 @@ class S_Encoder(nn.Module):
         return value
 
 class TDDModel:
-    def __init__(self, args, input_dim, device=torch.device("cuda")):
+    def __init__(self, args, input_dim, device=torch.device("cuda"), run_dir=None):
         self.args = args
-        # GPU 사용 강제
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-            print(f"GPU 사용: {torch.cuda.get_device_name(self.device)}")
-        else:
-            print("경고: GPU를 사용할 수 없습니다. CPU를 사용하지만 성능이 저하될 수 있습니다.")
-            self.device = torch.device("cpu")
-            
-        self.tpdv = dict(dtype=torch.float32, device=self.device)
         
+        # 네트워크
         self.input_dim = input_dim
         self.latents_dim = self.args["network"]["latents_dim"]
         self.output_dim = self.args["network"]["output_dim"]
+        self.device = device
         
         self.potential_net = PotentialNet(self.input_dim, self.latents_dim).to(device)
         self.s_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
-        self.g_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
         
         # 기본 TDD 설정
         self.total_steps = self.args["train"]["total_steps"]
         self.batch_size = self.args["train"]["batch_size"]
-        self.learning_rate = self.args["train"]["learning_rate"]
-        self.max_grad_norm = self.args["train"]["max_grad_norm"]
-        self.temperature = self.args["train"]["temperature"]
-        # learning_rate 처리
-        learning_rate_raw = self.args["train"].get("learning_rate", 1e-4)
-        if isinstance(learning_rate_raw, str):
-            try:
-                self.learning_rate = float(learning_rate_raw)
-            except ValueError:
-                self.learning_rate = 1e-4
-                print(f"경고: learning_rate '{learning_rate_raw}'를 숫자로 변환할 수 없습니다. 기본값 1e-4를 사용합니다.")
-        else:
-            self.learning_rate = learning_rate_raw
+        self.max_grad_norm_init = float(self.args["train"].get("max_grad_norm_init", 0.01))
+        self.max_grad_norm_final = float(self.args["train"].get("max_grad_norm_final", 0.0001))
+        self.grad_norm_decay_type = self.args["train"].get("grad_norm_decay_type", "linear")
+        self.lr_init = float(self.args["train"].get("learning_rate_init", 1e-5))
+        self.lr_final = float(self.args["train"].get("learning_rate_final", 1e-7))
+        self.lr_decay_type = self.args["train"].get("lr_decay_type", "linear")
         
+        # HNM & PSR 설정
+        # self.max_pos_steps = self.args["tdd"]["max_pos_steps"]
+        # self.hard_neg_thr = self.args["tdd"]["hard_neg_thr"]
+        # self.hard_neg_k = self.args["tdd"]["hard_neg_k"]
+        self.hard_neg_thr = None
+        self.hard_neg_k = None
         self.tdd_discount = self.args["tdd"]["tdd_discount"]
         
-        self.optimizer = torch.optim.Adam([{"params": self.potential_net.parameters(), "lr": self.learning_rate},
-                                          {"params": self.s_encoder.parameters(), "lr": self.learning_rate}])
+        self.optimizer = torch.optim.Adam(
+            [
+                {"params": self.potential_net.parameters(), "lr": self.lr_init},
+                {"params": self.s_encoder.parameters(), "lr": self.lr_init}
+            ]
+        )
         
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = f"runs/TDD/{timestamp}"
-        self.writer = SummaryWriter(run_dir)
+        # Tensorboard 설정
+        if run_dir is not None:
+            self.run_dir = run_dir
+        else:
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_dir = f"runs/TDD/{ts}"
+        os.makedirs(self.run_dir, exist_ok=True)
+        self.writer = SummaryWriter(self.run_dir)
         self.writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s"
             % ("\n".join([f"|{key}|{value}|" for key, value in args.items()])),
         )
-            
+        
+    def get_scheduled_value(self, step, init, final, decay_type="linear"):
+        if decay_type == "linear":
+            ratio = min(step / self.total_steps, 1.0)
+            return init + (final - init) * ratio
+        elif decay_type == "cosine":
+            ratio = min(step / self.total_steps, 1.0)
+            cosine = 0.5 * (1 + math.cos(math.pi * ratio))
+            return final + (init - final) * cosine
+        else:
+            return init
+
+    def _select_hard_negatives(self, dists):
+        """ Return boolean mask (BxB) where True = hard negative """
+        B = dists.shape[0]
+        I = torch.eye(B, device=dists.device, dtype=torch.bool) # 이것만 보면 양의 샘플들에 대한 마스킹
+        neg_d = dists.clone()
+        neg_d[I] = 1e6
+        mask = torch.zeros_like(dists, dtype=torch.bool)    # False로 초기화된 BxB 텐서
+        
+        # 거리값 임계 조건
+        if self.hard_neg_thr is not None:
+            mask |= neg_d < self.hard_neg_thr   # neg_d < hard_neg_thr 인 경우 True로 마스킹
+        
+        # 상위 k개 조건
+        if self.hard_neg_thr is not None:
+            topk = torch.topk(
+                -neg_d, k=min(self.hard_neg_k, B - 1), dim=1     # 가장 작은 값부터 찾기에 -neg_d를 사용. 여기서 dim=1은 열을 의미하지만 결국 각 행에서 가장 작은 값을 찾겠다는 뜻으로 해석해야 한다.
+                ).indices   # 각 행마다 column index가 반환된다. 결국 shape는 (batch_size, hard_neg_k)이다.
+            row_idx = torch.arange(B, device=dists.device).unsqueeze(1).expand_as(topk) # 아까 구한 topk의 각 행에 대한 row index를 구한다. 얘와 같이 사용하면 mask의 크기는 (batch_size, hard_neg_k)이 된다.
+            mask[row_idx, topk] = True  # row_idx도 (B, topk), topk도 (B, topk)이므로 결국 (B, B) 크기의 텐서가 된다. topk의 모든 행에 대한 열 인덱스에 대해 0, 1, 2, .. 맞춰주려고 row_idx 쓴거다.
+        return mask & ~I    # 행여라도 대각선 True가 있을까봐 다시 False로 마스킹
+                    
     def update(self, data): # data의 차원: (n_agent, episode 수, max_cycles, dict, n_rollout_threads, 2차원(s_t))
         obss = [[] for _ in range(len(data))]
         next_obss = [[] for _ in range(len(data))]
         
         # 단일 에이전트로 데이터 추출
-        obss[0] = np.array([[step['obs'] for step in episode] for episode in data[0]])
+        obss[0] = np.array([[step['obs'] for step in episode] for episode in data[0]])  # (n_episode, max_cycles, n_rollout_threads, 2)
         obss[0] = torch.from_numpy(obss[0]).to(self.device)
-        next_obss[0] = np.array([[step['next_obs'] for step in episode] for episode in data[0]])
+        next_obss[0] = np.array([[step['next_obs'] for step in episode] for episode in data[0]])  # (n_episode, max_cycles, n_rollout_threads, 2)
         next_obss[0] = torch.from_numpy(next_obss[0]).to(self.device)
         n_trajs, n_steps, n_threads = obss[0].shape[:3]
         
@@ -179,14 +216,22 @@ class TDDModel:
         start_time = time.time()
         
         for i in range(self.total_steps):
-            # 각 thread별로 독립적으로 처리
+            total_loss = 0.0
+            # learning rate, grad norm 스케줄 적용
+            cur_lr = self.get_scheduled_value(i, self.lr_init, self.lr_final, self.lr_decay_type)
+            cur_grad_norm = self.get_scheduled_value(i, self.max_grad_norm_init, self.max_grad_norm_final, self.grad_norm_decay_type)
+            # optimizer의 learning rate 동적 변경
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = cur_lr
+            
             for thread_idx in range(n_threads):
                 # Sample mini-batch data (positive pairs)
-                traj_idx = torch.randint(n_trajs, (self.batch_size,), device=self.device)
-                step_idx = torch.randint(n_steps, (self.batch_size,), device=self.device)
+                traj_idx = torch.randint(n_trajs, (self.batch_size,), device=self.device)   # 0 ~ n_trajs-1 중 랜덤 선택
+                step_idx = torch.randint(n_steps, (self.batch_size,), device=self.device)  # 0 ~ n_steps-1 중 랜덤 선택
                 intervals = discounted_sampling(
                     n_steps - step_idx, self.tdd_discount
                 )
+                # intervals = torch.clamp(intervals, min=1, max=self.max_pos_steps)
                 
                 # 현재 상태와 다음 상태 추출 (특정 thread에 대해서만)
                 obs = obss[0][traj_idx, step_idx, thread_idx]  # (batch_size, 2)
@@ -196,53 +241,94 @@ class TDDModel:
                 phi_s = self.s_encoder(obs)
                 phi_g = self.s_encoder(goal)
                 
-                logits = c_g.T - mrn_distance(phi_s[:, None], phi_g[None, :])
-                # thread_logits.append(logits)
+                mrn_dists = mrn_distance(phi_s[:, None], phi_g[None, :])    # 대각선 값이 양의 샘플이다. s_0 와 g_0사이의 거리를 재는 것이기 때문이다.
+                logits = c_g.T - mrn_dists
                 I = torch.eye(self.batch_size, device=self.device)
-                contrastive_loss = (F.cross_entropy(logits, I) + F.cross_entropy(logits.T, I)) / 2
                 
-                contrastive_loss = torch.mean(contrastive_loss)
-                # logsumexp = torch.mean((torch.logsumexp(logits + 1e-6, axis=1)**2))
-                # Backprop
-                loss = contrastive_loss # 여기에 args.logsumexp_coef * logsumexp 추가를 할 수도 있다.
-                
+                """ Hard Negative Masking """
+                if self.hard_neg_thr is not None and self.hard_neg_k is not None:
+                    print("Hard Negative Masking 적용")
+                    hn_mask = self._select_hard_negatives(mrn_dists)    # (batch_size, batch_size), 이렇게 하면 hard negative가 있는 경우만 True로 마스킹된다.
+                    valid_mask = hn_mask | I.bool() # 양의 샘플링, 즉 대각선도 다시 트루로 표시
+                    # fallback: if 어떤 row도 hard negative가 없으면 모든 쌍을 유지
+                    rows_no_hn = (~hn_mask).all(dim=1)  # 하드 네가티브가 없는 행을 찾는다. 얘의 결과 shape는 (batch_size,)이다. 각 행마다 모든 열값이 트루일 때만 트루가 출력되기에, rows_no_hn이 (batch_size,)의 모든 값이 True라면 hn_mask가 모두 False인 것이다.
+                    if rows_no_hn.any():
+                        print(f"하드 네거티브가 없는 행이 발견되었습니다. 해당 행은 모든 네거티브를 사용하도록 fallback합니다.")    # fallback: 원래 시도한 방법이 통하지 않을 때 대신 사용되는 예비 방법. (=대체경로, 안전망 등)
+                        valid_mask[rows_no_hn] = True
+                    logits_masked = logits.clone()
+                    logits_masked[~valid_mask] = -float('inf')
+                else:
+                    logits_masked = logits
+                    
+                # Contrastive Loss
+                contrastive_loss = (F.cross_entropy(logits_masked, I) + F.cross_entropy(logits_masked.T, I)) / 2
+
+                # 전체 loss: contrastive + margin loss (가중치 조정 가능)
+                loss = contrastive_loss
+
+                total_loss += loss
+
                 self.optimizer.zero_grad()
                 loss.backward()
-                # torch.nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.s_encoder.parameters(), cur_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.potential_net.parameters(), cur_grad_norm)
                 self.optimizer.step()
+                
+                # grad norm 계산 및 출력
+                def get_grad_norm(model):
+                    total_norm = 0.0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                    return total_norm ** 0.5
+
+                s_grad_norm = get_grad_norm(self.s_encoder)
+                p_grad_norm = get_grad_norm(self.potential_net)
+                
+                # 각 thread별로 메트릭 기록
+                if i % self.args["train"]["logging_interval"] == 0:
+                    thread_metrics = {
+                        f'thread_{thread_idx}/contrastive/contrastive_loss': contrastive_loss.item(),
+                        f'thread_{thread_idx}/contrastive/categorical_accuracy': torch.mean((torch.argmax(logits, axis=1) ==
+                                                                        torch.arange(self.batch_size, device=self.device)).float()).item(),
+                        f'thread_{thread_idx}/contrastive/logits_pos': torch.diag(logits).mean(),
+                        f'thread_{thread_idx}/contrastive/logits_neg': torch.mean(logits * (1 - I)),
+                        f'thread_{thread_idx}/contrastive/logits_logsumexp': torch.mean((torch.logsumexp(logits, axis=1)**2)),
+                        f'thread_{thread_idx}/contrastive/c_g_pos': torch.diag(c_g).mean(),
+                        f'thread_{thread_idx}/contrastive/c_g_neg': torch.mean(c_g * (1 - I)),
+                        f'thread_{thread_idx}/contrastive/s_grad_norm': s_grad_norm,
+                        f'thread_{thread_idx}/contrastive/p_grad_norm': p_grad_norm
+                    }
+                    metrics.update(thread_metrics)
             
             if i % self.args["train"]["logging_interval"] == 0:
-                metrics['contrastive/contrastive_loss'] = contrastive_loss.item()
-                metrics['contrastive/categorical_accuracy'] = torch.mean((torch.argmax(logits, axis=1) ==
-                                                                          torch.arange(self.batch_size, device=self.device)).float()).item()
-                metrics['contrastive/logits_pos'] = torch.diag(logits).mean()
-                metrics['contrastive/logits_neg'] = torch.mean(logits * (1 - I))
-                metrics['contrastive/logits_logsumexp'] = torch.mean((torch.logsumexp(logits, axis=1)**2))
-                metrics['contrastive/c_g_pos'] = torch.diag(c_g).mean()
-                metrics['contrastive/c_g_neg'] = torch.mean(c_g * (1 - I))
-                
                 for k, v in metrics.items():
                     self.writer.add_scalar(k, v, i)
                 end_time = time.time()
-                print(f"Step {i} contrastive_loss {contrastive_loss.item():.3f} time {end_time - start_time:.3f}")
+                print(f"Step {i} contrastive_loss {contrastive_loss:.3f} time {end_time - start_time:.3f}")
+                print(f"Step {i} total_loss {total_loss/n_threads:.3f} time {end_time - start_time:.3f}")
+                print(f"Step {i} learning rate {cur_lr:.2e} grad norm upper {cur_grad_norm:.2e} | "
+                      f"s_grad_norm {s_grad_norm:.2e} | p_grad_norm {p_grad_norm:.2e}\n")
                 start_time = end_time
                 
-    def plot_distance_map(self, goal_pos, map_size, landmarks, obstacles):
+    def plot_distance_map(self, start_pos, map_size, landmarks, obstacles, agent_id=None):
         """목표 지점으로부터의 거리를 시각화합니다.
         Args:
-            goal_pos: (tuple) 목표 위치 (x, y)
+            start_pos: (tuple) 시작 위치 (x, y)
             landmarks: (list) 랜드마크 정보 리스트, 각 요소는 {'position': (x, y), 'size': size} 형태
             obstacles: (list) 장애물 정보 리스트, 각 요소는 {'position': (x, y), 'size': size} 형태
             map_size: (int) 맵의 크기
+            agent_id: (str) 에이전트 식별자 (예: "thread_0_agent_1")
         """
         # 모든 가능한 위치 생성
         x = np.linspace(-map_size, map_size, 100)   # -map_size ~ map_size 사이의 100개의 점
         y = np.linspace(-map_size, map_size, 100)
-        X, Y = np.meshgrid(x, y)    # 100x100 크기의 그리드 생성
+        X, Y = np.meshgrid(x, y)    # 100x100 크기의 그리드 생성. x와 y의 모든 조합을 포함
         positions = np.stack([X.flatten(), Y.flatten()], axis=1)    # 100x2 크기의 행렬로 변환
         
         # 목표 위치를 텐서로 변환
-        goal_pos_tensor = torch.tensor(goal_pos, device=self.device).float()
+        start_pos_tensor = torch.tensor(start_pos, device=self.device).float()  # (2,)
         
         # 배치 크기 설정 (더 작게 조정)
         batch_size = 100  # 한 번에 처리할 점의 수
@@ -251,33 +337,23 @@ class TDDModel:
         
         with torch.no_grad():
             # 배치 단위로 처리
-            for i in range(0, n_positions, batch_size):
+            for i in range(0, n_positions, batch_size): # n_positions = 10000, batch_size = 100
                 end_idx = min(i + batch_size, n_positions)
-                batch_positions = positions[i:end_idx]
+                batch_positions = positions[i:end_idx]  # 100개의 위치 (100, 2)
                 
                 # 현재 배치의 위치와 목표 위치를 인코딩
                 positions_tensor = torch.from_numpy(batch_positions).to(self.device).float()
-                goal_pos_tensor_batch = goal_pos_tensor.unsqueeze(0).repeat(len(batch_positions), 1)
+                start_pos_tensor_batch = start_pos_tensor.unsqueeze(0).repeat(len(batch_positions), 1)
                 
                 # 인코딩 수행
-                phi_s = self.s_encoder(positions_tensor)
-                phi_g = self.s_encoder(goal_pos_tensor_batch)
+                phi_s = self.s_encoder(positions_tensor)    # (100, 32)
+                phi_start = self.s_encoder(start_pos_tensor_batch)    # (100, 32)
                 
-                # MRN 거리 계산 (메모리 효율적으로)
-                d = phi_s.shape[-1]
-                x_prefix = phi_s[..., :d // 2]
-                x_suffix = phi_s[..., d // 2:]
-                y_prefix = phi_g[..., :d // 2]
-                y_suffix = phi_g[..., d // 2:]
-                
-                max_component = torch.max(F.relu(x_prefix - y_prefix), axis=-1).values
-                l2_component = torch.sqrt(torch.square(x_suffix - y_suffix).sum(axis=-1) + 1e-6)
-                
-                batch_dists = max_component + l2_component
-                dists[i:end_idx] = batch_dists.cpu().numpy()
+                batch_dists = mrn_distance(phi_start[:, None], phi_s[None, :])  #(100, 10)
+                dists[i:end_idx] = torch.diag(batch_dists).cpu().numpy().squeeze()
                 
                 # 메모리 해제
-                del phi_s, phi_g, x_prefix, x_suffix, y_prefix, y_suffix, max_component, l2_component, batch_dists
+                del phi_s, phi_start, batch_dists
                 torch.cuda.empty_cache()
             
             # 거리 맵 생성
@@ -287,10 +363,10 @@ class TDDModel:
             plt.figure(figsize=(10, 8))
             im = plt.imshow(dist_map, extent=[-map_size, map_size, -map_size, map_size], 
                           origin='lower', cmap='viridis')
-            plt.colorbar(im, label='Distance to Goal')
+            plt.colorbar(im, label='Distance from Start')
             
             # 목표 위치 표시
-            plt.plot(goal_pos[0], goal_pos[1], 'r*', markersize=15, label='Goal')
+            plt.plot(start_pos[0], start_pos[1], 'r*', markersize=15, label='Start')
             
             # 랜드마크 표시
             for landmark in landmarks:
@@ -306,385 +382,14 @@ class TDDModel:
                 )
                 plt.gca().add_patch(obstacle_circle)
             
-            plt.title('Distance Map to Goal (with Landmarks and Wall)')
+            plt.title(f'Distance Map from Start (with Landmarks and Wall) - {agent_id}')
             plt.xlabel('X')
             plt.ylabel('Y')
             plt.legend()
             
             # 저장
-            save_path = f"runs/TDD/distance_map_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            save_path = os.path.join(self.run_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{agent_id}.png')
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
             
-            print(f"거리 맵이 저장되었습니다: {save_path}")
-
-# class TDDModel(nn.Module):
-#     """TDD Intrinsic Reward Model for multi-agent environments."""
-
-#     def __init__(self, args, obs_shape, device=torch.device("cpu")):
-#         """Initialize TDD model.
-#         Args:
-#             args: arguments
-#             obs_shape: observation shape
-#             device: device to use
-#         """
-#         super(TDDModel, self).__init__()
-#         self.args = args
-        
-#         # GPU 사용 강제
-#         if torch.cuda.is_available():
-#             self.device = torch.device("cuda")
-#             print(f"GPU 사용: {torch.cuda.get_device_name(self.device)}")
-#         else:
-#             print("경고: GPU를 사용할 수 없습니다. CPU를 사용하지만 성능이 저하될 수 있습니다.")
-#             self.device = torch.device("cpu")
-            
-#         self.tpdv = dict(dtype=torch.float32, device=self.device)
-        
-#         # obs_shape 처리
-#         if isinstance(obs_shape, (tuple, list)):
-#             if len(obs_shape) == 2:  # (batch_size, obs_dim) 형태
-#                 self.obs_shape = (obs_shape[1],)  # 실제 관측 차원만 사용
-#             else:
-#                 self.obs_shape = obs_shape
-#         else:
-#             self.obs_shape = (obs_shape,)  # 단일 숫자인 경우
-            
-        # self.feaures_dim = args["network"]["features_dim"]
-        # self.latents_dim = args["network"]["latents_dim"]
-        # self.output_dim = args["network"]["output_dim"]
-        
-#         # activation function 처리
-#         activation_name = args["network"]["activation_function"]
-#         self.activation = get_active_func(activation_name)
-        
-#         # TDD specific parameters
-#         self.aggregate_fn = args.get("aggregate_fn", "mean")
-#         self.energy_fn = args.get("energy_fn", "mrn_pot")
-#         self.temperature = args["train"].get("temperature", 1.0)
-#         self.knn_k = args.get("knn_k", 10)
-        
-#         # learning_rate 처리
-#         learning_rate_raw = args["train"].get("learning_rate", 1e-4)
-#         if isinstance(learning_rate_raw, str):
-#             try:
-#                 self.learning_rate = float(learning_rate_raw)
-#             except ValueError:
-#                 self.learning_rate = 1e-4
-#                 print(f"경고: learning_rate '{learning_rate_raw}'를 숫자로 변환할 수 없습니다. 기본값 1e-4를 사용합니다.")
-#         else:
-#             self.learning_rate = learning_rate_raw
-            
-#         # self.batch_size = args["train"].get("batch_size", 256)
-        
-#         # CNN feature extractor
-#         # if len(self.obs_shape) == 3:  # Image observations [C, H, W]
-#         #     self.feature_extractor = self._build_cnn_extractor()
-#         # else:  # Vector observations
-#         #     self.feature_extractor = self._build_mlp_extractor()
-        
-#         # Encoder for representations
-#         self.encoder = ModelOutputHeads(
-#             feature_dim=self.model_features_dim,
-#             latent_dim=self.model_latents_dim,
-#             activation_fn=self.activation_fn,
-#             mlp_norm=self.model_mlp_norm,
-#             mlp_layers=self.model_mlp_layers,
-#             output_dim=64,
-#         )
-
-#         # Potential network for energy calculation
-#         self.potential_net = nn.Sequential(
-#             nn.Linear(self.features_dim, self.latents_dim),
-#             self.activation,
-#             nn.Linear(self.latents_dim, 1)
-#         )
-
-#         # 옵티마이저
-#         all_params = list(self.feature_extractor.parameters()) + \
-#                     list(self.encoder.parameters()) + \
-#                     list(self.potential_net.parameters())
-#         self.optimizer = torch.optim.Adam(all_params, lr=self.learning_rate, weight_decay=1e-5)
-#         self.max_grad_norm = args.get("max_grad_norm", 1.0)
-        
-#         # Buffer for training
-#         # self.buffer_size = args["train"].get("buffer_size", 10000)
-#         # self.transition_buffer = deque(maxlen=self.buffer_size)
-        
-#         # 모델을 지정된 디바이스로 이동
-#         self.to(self.device)
-
-#     def _build_cnn_extractor(self):
-#         """Build CNN feature extractor."""
-#         cnn = nn.Sequential(
-#             nn.Conv2d(self.obs_shape[0], 32, kernel_size=8, stride=4),
-#             nn.ReLU(),
-#             nn.Conv2d(32, 64, kernel_size=4, stride=2),
-#             nn.ReLU(),
-#             nn.Conv2d(64, 64, kernel_size=3, stride=1),
-#             nn.ReLU(),
-#             nn.Flatten(),
-#             nn.Linear(self._get_conv_output_size(), self.features_dim),
-#             nn.ReLU()
-#         )
-#         return cnn
-
-#     def _get_conv_output_size(self):
-#         """Get conv output size."""
-#         with torch.no_grad():
-#             dummy_input = torch.zeros(1, *self.obs_shape)
-#             x = self._forward_conv(dummy_input)
-#             return x.size(1)
-
-#     def _forward_conv(self, obs):
-#         """Forward pass through CNN layers without final linear layer."""
-#         x = obs
-#         x = nn.Conv2d(self.obs_shape[0], 32, kernel_size=8, stride=4)(x)
-#         x = nn.ReLU()(x)
-#         x = nn.Conv2d(32, 64, kernel_size=4, stride=2)(x)
-#         x = nn.ReLU()(x)
-#         x = nn.Conv2d(64, 64, kernel_size=3, stride=1)(x)
-#         x = nn.ReLU()(x)
-#         x = nn.Flatten()(x)
-#         return x
-
-#     def _build_mlp_extractor(self):
-#         """Build MLP feature extractor."""
-#         print(f"MLP Extractor 입력 차원: {self.obs_shape}")  # 디버깅용
-#         input_dim = self.obs_shape[0] if isinstance(self.obs_shape[0], int) else self.obs_shape[0].item()
-#         mlp = nn.Sequential(
-#             nn.Linear(input_dim, self.features_dim),
-#             self.activation,
-#             nn.Linear(self.features_dim, self.features_dim),
-#             self.activation
-#         )
-#         return mlp
-
-#     def forward(self, obs):
-#         """Extract features from obs.
-#         Args:
-#             obs: (torch.Tensor) observations
-#         Returns:
-#             features: (torch.Tensor) extracted features
-#         """
-#         return self.feature_extractor(obs)
-
-#     def encode(self, features):
-#         """Encode features to latent space.
-#         Args:
-#             features: (torch.Tensor) extracted features
-#         Returns:
-#             encodings: (torch.Tensor) encoded features
-#         """
-#         encodings = self.encoder(features)
-#         return torch.clamp(encodings, min=-10.0, max=10.0)
-
-#     def compute_mrn_distance(self, x, y):
-#         """거리 계산 함수
-#         Args:
-#             x: (torch.Tensor) 인코딩된 벡터 1
-#             y: (torch.Tensor) 인코딩된 벡터 2
-#         Returns:
-#             distance: (torch.Tensor) 거리 값
-#         """
-#         return mrn_distance(x, y, batch_mode=True)
-
-#     def get_potential(self, features):
-#         """Get potential value for features.
-#         Args:
-#             features: (torch.Tensor) extracted features
-#         Returns:
-#             potential: (torch.Tensor) potential value
-#         """
-#         return self.potential_net(features)
-
-#     def calculate_intrinsic_reward(self, obs, next_obs, obs_history, rollout_mean_state=None):
-#         """Calculate intrinsic reward.
-#         Args:
-#             obs: (torch.Tensor) current observation, shape (n_threads, obs_dim)
-#             next_obs: (torch.Tensor) next observation, shape (n_threads, obs_dim)
-#             obs_history: (list) list of observation history tensors for each environment
-#             rollout_mean_state: (numpy.ndarray) mean state of all previous rollouts
-#         Returns:
-#             intrinsic_reward: (numpy.ndarray) intrinsic reward, shape (n_threads)
-#             obs_history: (list) updated observation history
-#             int_rews_part_1: (numpy.ndarray) part 1 of intrinsic reward, shape (n_threads)
-#             int_rews_part_2: (numpy.ndarray) part 2 of intrinsic reward, shape (n_threads)
-#         """
-#         with torch.no_grad():
-#             batch_size = obs.shape[0]
-#             obs = obs.to(self.device)
-#             next_obs = next_obs.to(self.device)
-            
-#             curr_features = self.forward(obs)
-#             next_features = self.forward(next_obs)
-            
-#             curr_encoding = self.encode(curr_features)
-#             next_encoding = self.encode(next_features)
-            
-#             intrinsic_reward = torch.zeros(obs.shape[0], device=self.device)
-#             int_rews_part_1 = torch.zeros(obs.shape[0], device=self.device)
-#             int_rews_part_2 = torch.zeros(obs.shape[0], device=self.device)
-            
-#             updated_history = []
-#             for i in range(obs.shape[0]):
-#                 if obs_history[i] is None:
-#                     updated_history.append(torch.stack([curr_encoding[i], next_encoding[i]]))
-#                 else:
-#                     if isinstance(obs_history[i], torch.Tensor):
-#                         hist = obs_history[i].to(self.device)
-#                     else:
-#                         hist = torch.tensor(obs_history[i], device=self.device)
-#                     updated_history.append(torch.cat([hist, next_encoding[i].unsqueeze(0)], dim=0))
-                
-#                 if obs_history[i] is not None:
-#                     hist_dist = self.compute_mrn_distance(updated_history[i], curr_encoding[i].unsqueeze(0))
-#                     int_rews_part_1[i] = hist_dist.min()
-                
-#                 if rollout_mean_state is not None:
-#                     mean_state = torch.tensor(rollout_mean_state, device=self.device)
-#                     mean_encoding = self.encode(self.forward(mean_state))
-#                     int_rews_part_2[i] = self.compute_mrn_distance(next_encoding[i].unsqueeze(0), mean_encoding)
-                
-#                 intrinsic_reward[i] = int_rews_part_1[i] + int_rews_part_2[i]
-            
-#             return (
-#                 intrinsic_reward.cpu().numpy(),
-#                 [h.cpu().numpy() if isinstance(h, torch.Tensor) else h for h in updated_history],
-#                 int_rews_part_1.cpu().numpy(),
-#                 int_rews_part_2.cpu().numpy()
-#             )
-
-#     # def store_transition(self, obs, next_obs):
-#     #     """Store transition (obs, next_obs) in buffer for training.
-#     #     Args:
-#     #         obs: (torch.Tensor) current observation
-#     #         next_obs: (torch.Tensor) next observation
-#     #     """
-#     #     obs_np = obs.detach().cpu().numpy()
-#     #     next_obs_np = next_obs.detach().cpu().numpy()
-        
-#     #     batch_size = obs.size(0)
-#     #     for i in range(min(batch_size, 4)):
-#     #         self.transition_buffer.append((
-#     #             obs_np[i],
-#     #             next_obs_np[i]
-#     #         ))
-
-#     # def sample_batch(self, batch_size=None):
-#     #     """Sample batch from transition buffer.
-#     #     Args:
-#     #         batch_size: (int) batch size
-#     #     Returns:
-#     #         obs_batch: (torch.Tensor) batch of observations
-#     #         next_obs_batch: (torch.Tensor) batch of next observations
-#     #     """
-#     #     if batch_size is None:
-#     #         batch_size = self.batch_size
-            
-#     #     if len(self.transition_buffer) < batch_size:
-#     #         batch_size = len(self.transition_buffer)
-            
-#     #     indices = np.random.choice(len(self.transition_buffer), batch_size, replace=False)
-#     #     obs_list, next_obs_list = [], []
-        
-#     #     for idx in indices:
-#     #         obs, next_obs = self.transition_buffer[idx]
-#     #         obs_list.append(obs)
-#     #         next_obs_list.append(next_obs)
-            
-#     #     obs_batch = torch.tensor(np.array(obs_list), **self.tpdv)
-#     #     next_obs_batch = torch.tensor(np.array(next_obs_list), **self.tpdv)
-        
-#     #     return obs_batch, next_obs_batch
-
-#     def compute_infoNCE_loss(self, obs_batch, next_obs_batch):
-#         """Compute InfoNCE loss for representation learning.
-#         Args:
-#             obs_batch: (torch.Tensor) batch of observations
-#             next_obs_batch: (torch.Tensor) batch of next observations
-#         Returns:
-#             loss: (torch.Tensor) InfoNCE loss
-#         """
-#         batch_size = obs_batch.shape[0]
-        
-#         obs_features = self.forward(obs_batch)
-#         next_features = self.forward(next_obs_batch)
-        
-#         obs_encodings = self.encode(obs_features)
-#         next_encodings = self.encode(next_features)
-        
-#         obs_norm = torch.linalg.norm(obs_encodings, dim=1, keepdim=True)
-#         next_norm = torch.linalg.norm(next_encodings, dim=1, keepdim=True)
-        
-#         obs_encodings_norm = obs_encodings / (obs_norm + 1e-8)
-#         next_encodings_norm = next_encodings / (next_norm + 1e-8)
-        
-#         logits = torch.matmul(obs_encodings_norm, next_encodings_norm.t()) / self.temperature
-#         labels = torch.arange(batch_size, device=self.device)
-        
-#         loss = F.cross_entropy(logits, labels)
-        
-#         v_curr = self.get_potential(obs_features)
-#         v_next = self.get_potential(next_features)
-        
-#         potential_loss = F.smooth_l1_loss(v_curr, v_next - 0.05)
-        
-#         total_loss = loss + 0.1 * potential_loss
-        
-#         return total_loss, loss, potential_loss
-
-#     def update(self, batch_size=None):
-#         """Update model parameters using InfoNCE loss.
-#         Args:
-#             batch_size: (int) batch size
-#         Returns:
-#             loss_dict: (dict) dictionary of losses
-#         """
-#         if len(self.transition_buffer) < max(self.batch_size // 4, 16):
-#             return {"total_loss": 0, "infoNCE_loss": 0, "potential_loss": 0}
-        
-#         actual_batch_size = min(self.batch_size, len(self.transition_buffer))
-#         mini_batch_size = min(actual_batch_size, 64)
-#         n_updates = max(1, actual_batch_size // mini_batch_size)
-        
-#         total_loss_sum = 0
-#         infoNCE_loss_sum = 0
-#         potential_loss_sum = 0
-        
-#         for _ in range(n_updates):
-#             obs_batch, next_obs_batch = self.sample_batch(mini_batch_size)
-            
-#             total_loss, infoNCE_loss, potential_loss = self.compute_infoNCE_loss(obs_batch, next_obs_batch)
-            
-#             self.optimizer.zero_grad()
-#             total_loss.backward()
-            
-#             torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.max_grad_norm)
-            
-#             self.optimizer.step()
-            
-#             total_loss_sum += total_loss.item()
-#             infoNCE_loss_sum += infoNCE_loss.item()
-#             potential_loss_sum += potential_loss.item()
-        
-#         return {
-#             "total_loss": total_loss_sum / n_updates,
-#             "infoNCE_loss": infoNCE_loss_sum / n_updates,
-#             "potential_loss": potential_loss_sum / n_updates
-#         }
-
-#     def save(self, save_dir, id):
-#         """Save the model."""
-#         state_dict = self.state_dict()
-#         torch.save(state_dict, str(save_dir) + "/tdd_model_agent" + str(id) + ".pt")
-
-#     def restore(self, model_dir, id):
-#         """Restore the model."""
-#         try:
-#             state_dict = torch.load(str(model_dir) + "/tdd_model_agent" + str(id) + ".pt", map_location=self.device)
-#             self.load_state_dict(state_dict)
-#         except FileNotFoundError:
-#             print(f"TDD 모델 파일을 찾을 수 없습니다: /tdd_model_agent{id}.pt")
-#         except Exception as e:
-#             print(f"TDD 모델 복원 중 오류 발생: {e}")
+            print(f"{agent_id}의 거리 맵이 저장되었습니다: {save_path}")

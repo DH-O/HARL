@@ -90,9 +90,16 @@ def main():
         algo_args = all_config["algo_args"]
         env_args = all_config["env_args"]
     else:  # load config from corresponding yaml file
-        """ TDD 관련 추가함"""
-        algo_args, env_args, tdd_args = get_defaults_yaml_args(args["algo"], args["env"], args["use_tdd"])
-    update_args(unparsed_dict, algo_args, env_args, tdd_args)  # update args from command line
+        if args["use_tdd"] == 1:
+            """ TDD 관련 추가함"""
+            algo_args, env_args, tdd_args = get_defaults_yaml_args(args["algo"], args["env"], args["use_tdd"])
+        else:
+            algo_args, env_args, _ = get_defaults_yaml_args(args["algo"], args["env"])
+    
+    if args["use_tdd"] == 1:
+        update_args(unparsed_dict, algo_args, env_args, tdd_args)  # update args from command line
+    else:
+        update_args(unparsed_dict, algo_args, env_args)  # update args from command line
     """ TDD 관련 추가함 끝"""
 
     if args["env"] == "dexhands":
@@ -106,7 +113,10 @@ def main():
     # start training
     from harl.runners import RUNNER_REGISTRY
 
-    runner = RUNNER_REGISTRY[args["algo"]](args, algo_args, env_args, tdd_args)
+    if args["use_tdd"] == 1:
+        runner = RUNNER_REGISTRY[args["algo"]](args, algo_args, env_args, tdd_args)
+    else:
+        runner = RUNNER_REGISTRY[args["algo"]](args, algo_args, env_args, None)
     runner.run()
     runner.close()
 
