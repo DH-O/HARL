@@ -4,6 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 import os
 
+# from collections import deque
 
 class RolloutBuffer:
     """Buffer for storing and updating rollout mean states."""
@@ -26,6 +27,7 @@ class RolloutBuffer:
         self.rollout_count = np.zeros(num_agents, dtype=np.int)
         self.all_rollouts_mean_state = [None for _ in range(num_agents)]
         self.current_rollout_states = [[] for _ in range(self.num_agents)]
+        # self.rollout_history = [deque(maxlen=512) for _ in range(self.num_agents)]
         self.rollout_history = [[] for _ in range(self.num_agents)]
         
     def add_observation(self, obs):
@@ -135,6 +137,11 @@ class RolloutBuffer:
         if agent_id is not None:
             return self.all_rollouts_mean_state[agent_id]  # (n_rollout_threads, 2) 형태의 리스트
         return self.all_rollouts_mean_state  # [agent_id][thread_id] 형태의 2차원 리스트
+
+    def clear_rollout_history(self):
+        """Clear rollout history."""
+        for agent_id in range(self.num_agents):
+            self.rollout_history[agent_id].clear()
 
     def plot_mean_state_trajectory(self, save_dir="rollout_mean_state_plots", map_size=1.0):
         """

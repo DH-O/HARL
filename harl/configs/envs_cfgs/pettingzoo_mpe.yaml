@@ -1,12 +1,11 @@
 scenario: simple_spread_v2 # choose from simple_spread_v2, simple_reference_v2, simple_speaker_listener_v3
 continuous_actions: True
 # 아래서부터 내가 새로 추가한 것
-map_size: 8
+map_size: 1
 N: 2
-max_cycles: 100
+max_cycles: 200
 use_wall: True
-sparse_reward: True
-agent_size: 0.3
-landmark_size: 0.2
-wall_size: 0.9
-agent_wise_distance: True
+sparse_reward: False
+agent_size: 0.1
+landmark_size: 0.05
+agent_wise_distance: False

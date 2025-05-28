@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name Map_8_Max_100_SR_wall_09_agent_wise_distance --use_exploration_metric 1 --use_tdd 0
+python train.py --algo hasac --env pettingzoo_mpe --exp_name Map_1_N_2_max_200_wall_tdd --use_exploration_metric 1 --use_tdd 1

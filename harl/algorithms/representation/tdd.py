@@ -129,8 +129,16 @@ class TDDModel:
         self.s_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
         
         # 기본 TDD 설정
-        self.total_steps = self.args["train"]["total_steps"]
+        self.warmup_steps = self.args["train"]["warmup_steps"]
+        self.learning_steps = self.args["train"]["learning_steps"]
+        self.learning_logging_interval = self.args["train"]["learning_logging_interval"]
+        self.warmup_logging_interval = self.args["train"]["warmup_logging_interval"]
+        
         self.batch_size = self.args["train"]["batch_size"]
+        
+        self.max_grad_norm = float(self.args["train"]["max_grad_norm"])
+        self.learning_rate = float(self.args["train"]["learning_rate"])
+        
         self.max_grad_norm_init = float(self.args["train"].get("max_grad_norm_init", 0.01))
         self.max_grad_norm_final = float(self.args["train"].get("max_grad_norm_final", 0.0001))
         self.grad_norm_decay_type = self.args["train"].get("grad_norm_decay_type", "linear")
@@ -168,39 +176,39 @@ class TDDModel:
             % ("\n".join([f"|{key}|{value}|" for key, value in args.items()])),
         )
         
-    def get_scheduled_value(self, step, init, final, decay_type="linear"):
-        if decay_type == "linear":
-            ratio = min(step / self.total_steps, 1.0)
-            return init + (final - init) * ratio
-        elif decay_type == "cosine":
-            ratio = min(step / self.total_steps, 1.0)
-            cosine = 0.5 * (1 + math.cos(math.pi * ratio))
-            return final + (init - final) * cosine
-        else:
-            return init
+    # def get_scheduled_value(self, step, init, final, decay_type="linear"):
+    #     if decay_type == "linear":
+    #         ratio = min(step / self.warmup_steps, 1.0)
+    #         return init + (final - init) * ratio
+    #     elif decay_type == "cosine":
+    #         ratio = min(step / self.warmup_steps, 1.0)
+    #         cosine = 0.5 * (1 + math.cos(math.pi * ratio))
+    #         return final + (init - final) * cosine
+    #     else:
+    #         return init
 
-    def _select_hard_negatives(self, dists):
-        """ Return boolean mask (BxB) where True = hard negative """
-        B = dists.shape[0]
-        I = torch.eye(B, device=dists.device, dtype=torch.bool) # 이것만 보면 양의 샘플들에 대한 마스킹
-        neg_d = dists.clone()
-        neg_d[I] = 1e6
-        mask = torch.zeros_like(dists, dtype=torch.bool)    # False로 초기화된 BxB 텐서
+    # def _select_hard_negatives(self, dists):
+    #     """ Return boolean mask (BxB) where True = hard negative """
+    #     B = dists.shape[0]
+    #     I = torch.eye(B, device=dists.device, dtype=torch.bool) # 이것만 보면 양의 샘플들에 대한 마스킹
+    #     neg_d = dists.clone()
+    #     neg_d[I] = 1e6
+    #     mask = torch.zeros_like(dists, dtype=torch.bool)    # False로 초기화된 BxB 텐서
         
-        # 거리값 임계 조건
-        if self.hard_neg_thr is not None:
-            mask |= neg_d < self.hard_neg_thr   # neg_d < hard_neg_thr 인 경우 True로 마스킹
+    #     # 거리값 임계 조건
+    #     if self.hard_neg_thr is not None:
+    #         mask |= neg_d < self.hard_neg_thr   # neg_d < hard_neg_thr 인 경우 True로 마스킹
         
-        # 상위 k개 조건
-        if self.hard_neg_thr is not None:
-            topk = torch.topk(
-                -neg_d, k=min(self.hard_neg_k, B - 1), dim=1     # 가장 작은 값부터 찾기에 -neg_d를 사용. 여기서 dim=1은 열을 의미하지만 결국 각 행에서 가장 작은 값을 찾겠다는 뜻으로 해석해야 한다.
-                ).indices   # 각 행마다 column index가 반환된다. 결국 shape는 (batch_size, hard_neg_k)이다.
-            row_idx = torch.arange(B, device=dists.device).unsqueeze(1).expand_as(topk) # 아까 구한 topk의 각 행에 대한 row index를 구한다. 얘와 같이 사용하면 mask의 크기는 (batch_size, hard_neg_k)이 된다.
-            mask[row_idx, topk] = True  # row_idx도 (B, topk), topk도 (B, topk)이므로 결국 (B, B) 크기의 텐서가 된다. topk의 모든 행에 대한 열 인덱스에 대해 0, 1, 2, .. 맞춰주려고 row_idx 쓴거다.
-        return mask & ~I    # 행여라도 대각선 True가 있을까봐 다시 False로 마스킹
+    #     # 상위 k개 조건
+    #     if self.hard_neg_thr is not None:
+    #         topk = torch.topk(
+    #             -neg_d, k=min(self.hard_neg_k, B - 1), dim=1     # 가장 작은 값부터 찾기에 -neg_d를 사용. 여기서 dim=1은 열을 의미하지만 결국 각 행에서 가장 작은 값을 찾겠다는 뜻으로 해석해야 한다.
+    #             ).indices   # 각 행마다 column index가 반환된다. 결국 shape는 (batch_size, hard_neg_k)이다.
+    #         row_idx = torch.arange(B, device=dists.device).unsqueeze(1).expand_as(topk) # 아까 구한 topk의 각 행에 대한 row index를 구한다. 얘와 같이 사용하면 mask의 크기는 (batch_size, hard_neg_k)이 된다.
+    #         mask[row_idx, topk] = True  # row_idx도 (B, topk), topk도 (B, topk)이므로 결국 (B, B) 크기의 텐서가 된다. topk의 모든 행에 대한 열 인덱스에 대해 0, 1, 2, .. 맞춰주려고 row_idx 쓴거다.
+    #     return mask & ~I    # 행여라도 대각선 True가 있을까봐 다시 False로 마스킹
                     
-    def update(self, data): # data의 차원: (n_agent, episode 수, max_cycles, dict, n_rollout_threads, 2차원(s_t))
+    def update(self, data, step=None, total_steps=None, is_warm_up=False): # data의 차원: (n_agent, episode 수, max_cycles, dict, n_rollout_threads, 2차원(s_t))
         obss = [[] for _ in range(len(data))]
         next_obss = [[] for _ in range(len(data))]
         
@@ -215,14 +223,14 @@ class TDDModel:
         metrics = {}
         start_time = time.time()
         
-        for i in range(self.total_steps):
+        for i in range(self.warmup_steps if is_warm_up else 4):
             total_loss = 0.0
-            # learning rate, grad norm 스케줄 적용
-            cur_lr = self.get_scheduled_value(i, self.lr_init, self.lr_final, self.lr_decay_type)
-            cur_grad_norm = self.get_scheduled_value(i, self.max_grad_norm_init, self.max_grad_norm_final, self.grad_norm_decay_type)
-            # optimizer의 learning rate 동적 변경
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = cur_lr
+            # # learning rate, grad norm 스케줄 적용
+            # cur_lr = self.get_scheduled_value(i, self.lr_init, self.lr_final, self.lr_decay_type)
+            # cur_grad_norm = self.get_scheduled_value(i, self.max_grad_norm_init, self.max_grad_norm_final, self.grad_norm_decay_type)
+            # # optimizer의 learning rate 동적 변경
+            # for param_group in self.optimizer.param_groups:
+            #     param_group['lr'] = cur_lr
             
             for thread_idx in range(n_threads):
                 # Sample mini-batch data (positive pairs)
@@ -270,8 +278,10 @@ class TDDModel:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.s_encoder.parameters(), cur_grad_norm)
-                torch.nn.utils.clip_grad_norm_(self.potential_net.parameters(), cur_grad_norm)
+                # torch.nn.utils.clip_grad_norm_(self.s_encoder.parameters(), cur_grad_norm)
+                # torch.nn.utils.clip_grad_norm_(self.potential_net.parameters(), cur_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.s_encoder.parameters(), self.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.potential_net.parameters(), self.max_grad_norm)
                 self.optimizer.step()
                 
                 # grad norm 계산 및 출력
@@ -287,7 +297,7 @@ class TDDModel:
                 p_grad_norm = get_grad_norm(self.potential_net)
                 
                 # 각 thread별로 메트릭 기록
-                if i % self.args["train"]["logging_interval"] == 0:
+                if i % (self.warmup_logging_interval if is_warm_up else self.learning_logging_interval) == 0:
                     thread_metrics = {
                         f'thread_{thread_idx}/contrastive/contrastive_loss': contrastive_loss.item(),
                         f'thread_{thread_idx}/contrastive/categorical_accuracy': torch.mean((torch.argmax(logits, axis=1) ==
@@ -302,17 +312,19 @@ class TDDModel:
                     }
                     metrics.update(thread_metrics)
             
-            if i % self.args["train"]["logging_interval"] == 0:
+            if i % (self.warmup_logging_interval if is_warm_up else self.learning_logging_interval) == 0:
                 for k, v in metrics.items():
                     self.writer.add_scalar(k, v, i)
                 end_time = time.time()
                 print(f"Step {i} contrastive_loss {contrastive_loss:.3f} time {end_time - start_time:.3f}")
                 print(f"Step {i} total_loss {total_loss/n_threads:.3f} time {end_time - start_time:.3f}")
-                print(f"Step {i} learning rate {cur_lr:.2e} grad norm upper {cur_grad_norm:.2e} | "
+                # print(f"Step {i} learning rate {cur_lr:.2e} grad norm upper {cur_grad_norm:.2e} | "
+                #       f"s_grad_norm {s_grad_norm:.2e} | p_grad_norm {p_grad_norm:.2e}\n")
+                print(f"Step {i} learning rate {self.learning_rate:.2e} grad norm upper {self.max_grad_norm:.2e} | "
                       f"s_grad_norm {s_grad_norm:.2e} | p_grad_norm {p_grad_norm:.2e}\n")
                 start_time = end_time
                 
-    def plot_distance_map(self, start_pos, map_size, landmarks, obstacles, agent_id=None):
+    def plot_distance_map(self, start_pos, map_size, landmarks, obstacles, agent_id=None, step=None):
         """목표 지점으로부터의 거리를 시각화합니다.
         Args:
             start_pos: (tuple) 시작 위치 (x, y)
@@ -388,7 +400,12 @@ class TDDModel:
             plt.legend()
             
             # 저장
-            save_path = os.path.join(self.run_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{agent_id}.png')
+            if step is not None:
+                save_dir = os.path.join(self.run_dir, f'step_{step}')
+                os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
+                save_path = os.path.join(save_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{agent_id}.png')
+            else:
+                save_path = os.path.join(self.run_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{agent_id}.png')
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
             

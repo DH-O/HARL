@@ -31,7 +31,7 @@ from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
 from harl.runners.tdd_runner import TddRunner
 """ TDD 관련 끝 """
 
-def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size):
+def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size, warmup=False):
         save_dir =  save_dir + "/exploration_metric"
         os.makedirs(save_dir, exist_ok=True)
         # chunk_size = 3
@@ -90,7 +90,10 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir
             plt.tight_layout()
             
             # 파일 이름 중복 방지: 이미 존재하는 경우 숫자 추가
-            base_filename = f'rollout_trajectories_envs_{env_id}'
+            if warmup:
+                base_filename = f'warmup_rollout_trajectories_envs_{env_id}'
+            else:
+                base_filename = f'rollout_trajectories_envs_{env_id}'
             file_path = os.path.join(save_dir, f'{base_filename}.png')
             counter = 1
             while os.path.exists(file_path):
@@ -192,7 +195,7 @@ class OffPolicyBaseRunner:
         """ TDD 관련 """
         self.tdd_args = tdd_args
         if self.tdd_args is not None and not self.algo_args["render"]["use_render"]:
-            self.tdd = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, self.log_dir)
+            self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, self.log_dir)
         """ TDD 관련 끝 """
         
         if self.share_param:
@@ -332,6 +335,10 @@ class OffPolicyBaseRunner:
             target_dim = [2, 3] # 랜드마크와 아군의 수와 상관 없이, 커서 에이전트의 위치는 2, 3에 있다.
         """ exploration metric 끝 """
         
+        self.tdd_runner.rollout_buffer.end_rollout()
+        self.tdd_runner.rollout_buffer.clear_rollout_history()
+        first_policy_learn = True
+        
         for step in range(1, steps + 1):
             actions = self.get_actions(
                 obs, available_actions=available_actions, add_random=True
@@ -366,7 +373,7 @@ class OffPolicyBaseRunner:
                     int_rew_coef = 1.0 - (step / (steps // self.tdd_args["train"]["coeff_stop_ratio"]))
                     pos = obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
                     new_pos = new_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
-                    int_rew = self.tdd.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2))
+                    int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2))
                     rewards += int_rew * int_rew_coef * self.tdd_args["train"]["coeff_magnitude"]
             """ TDD intrinsic reward 끝 """
             
@@ -388,24 +395,72 @@ class OffPolicyBaseRunner:
                 if len(np.array(available_actions).shape) == 3
                 else None,
             )
-            self.insert(data)
+            self.insert(data)   # 여기서 이제 롤아웃 버퍼도 야무지게 충전 중일 것이다.
             
             obs = new_obs
             share_obs = new_share_obs
             available_actions = new_available_actions
-            if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습
-                if self.algo_args["train"]["use_linear_lr_decay"]:  # False
-                    if self.share_param:
-                        self.actor[0].lr_decay(step, steps)
+            
+            if self.tdd_args is not None:
+                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
+                    raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
+                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) * self.num_agents * self.n_rollout_threads > self.tdd_args["train"]["batch_size"]:
+                    if first_policy_learn:
+                        first_policy_learn = False
                     else:
-                        for agent_id in range(self.num_agents):
-                            self.actor[agent_id].lr_decay(step, steps)
-                    self.critic.lr_decay(step, steps)
-                for _ in range(update_num): # update_num은 50이다.
-                    critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
-                    self.writter.add_scalar("critic_loss", critic_loss, step)
-                    self.writter.add_scalar("actor_loss", actor_loss, step)
-                    self.writter.add_scalar("alpha_loss", alpha_loss, step)
+                        self.tdd_runner.update_tdd_model(step=step, total_steps=steps)
+                        agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
+                        # 각 환경과 에이전트별로 거리 맵 생성
+            
+                        for thread_id in range(self.n_rollout_threads):
+                            for agent_id in range(self.num_agents):
+                                # 랜드마크와 장애물 정보 가져오기
+                                self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
+                                landmarks, obstacles = self.envs.remotes[thread_id].recv()
+                                
+                                # 현재 에이전트의 위치를 목표로 설정
+                                start_pos = agent_positions[thread_id, agent_id]
+                                # 거리 맵 생성
+                                self.tdd_runner.tdd_model.plot_distance_map(
+                                    start_pos, 
+                                    self.env_args["map_size"], 
+                                    landmarks, 
+                                    obstacles, 
+                                    f"thread_{thread_id}_agent_{agent_id}_start_pos_{start_pos[0]}_{start_pos[1]}",
+                                    step=step
+                                )
+                    
+                        self.tdd_runner.rollout_buffer.end_rollout()
+                        self.tdd_runner.rollout_buffer.clear_rollout_history()
+                    
+                    if self.algo_args["train"]["use_linear_lr_decay"]:  # False
+                        if self.share_param:
+                            self.actor[0].lr_decay(step, steps)
+                        else:
+                            for agent_id in range(self.num_agents):
+                                self.actor[agent_id].lr_decay(step, steps)
+                        self.critic.lr_decay(step, steps)
+                    for _ in range(update_num): # update_num은 50이다.
+                        critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
+                        self.writter.add_scalar("critic_loss", critic_loss, step)
+                        self.writter.add_scalar("actor_loss", actor_loss, step)
+                        self.writter.add_scalar("alpha_loss", alpha_loss, step)    
+            
+            else:
+                if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
+                    if self.algo_args["train"]["use_linear_lr_decay"]:  # False
+                        if self.share_param:
+                            self.actor[0].lr_decay(step, steps)
+                        else:
+                            for agent_id in range(self.num_agents):
+                                self.actor[agent_id].lr_decay(step, steps)
+                        self.critic.lr_decay(step, steps)
+                    for _ in range(update_num): # update_num은 50이다.
+                        critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
+                        self.writter.add_scalar("critic_loss", critic_loss, step)
+                        self.writter.add_scalar("actor_loss", actor_loss, step)
+                        self.writter.add_scalar("alpha_loss", alpha_loss, step)
+            
             if step % self.algo_args["train"]["eval_interval"] == 0:
                 cur_step = (
                     self.algo_args["train"]["warmup_steps"]
@@ -433,6 +488,7 @@ class OffPolicyBaseRunner:
                         self.log_file.flush()
                         self.done_episodes_rewards = []
                 self.save()
+        
         """ exploration metric """
         if self.args["use_exploration_metric"]:
             plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"])
@@ -447,7 +503,9 @@ class OffPolicyBaseRunner:
         # obs: (n_threads, n_agents, dim)
         # share_obs: (n_threads, n_agents, dim)
         obs, share_obs, available_actions = self.envs.reset()
-        for _ in range(warmup_steps):
+        # 궤적 기록용 변수
+        rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
+        for step in range(warmup_steps):
             # action: (n_threads, n_agents, dim)
             actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
             (
@@ -483,38 +541,54 @@ class OffPolicyBaseRunner:
             share_obs = new_share_obs
             available_actions = new_available_actions
             
+            # 위치 기록
+            for env_id in range(self.n_rollout_threads):
+                for agent_id in range(self.num_agents):
+                    xy_coords = obs[env_id, agent_id, 2:4]  # x, y 좌표
+                    rollout_data[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
+        
+        # warmup 궤적 시각화
+        plot_rollout_trajectory(
+            rollout_data, 
+            self.n_rollout_threads, 
+            self.num_agents, 
+            save_dir=self.run_dir,  # 또는 원하는 경로
+            map_size=self.env_args["map_size"],
+            warmup=True   # plot_rollout_trajectory에서 filename 인자를 받도록 수정 필요
+        )
+        
         """ TDD update """
         if self.tdd_args is not None:
             # TDD 모델 업데이트
-            self.tdd.update_tdd_model()
-            
+            self.tdd_runner.update_tdd_model(is_warm_up=True)
             # 환경 리셋
             obs, _, _ = self.envs.reset()
             # 에이전트의 위치만 추출 (x, y 좌표)
             agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
-            
             # 각 환경과 에이전트별로 거리 맵 생성
-            for thread_id in range(self.n_rollout_threads):
-                for agent_id in range(self.num_agents):
-                    # 현재 에이전트의 위치를 목표로 설정
-                    start_pos = agent_positions[thread_id, agent_id]
-                    
-                    # 랜드마크와 장애물 정보 가져오기
-                    self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
-                    landmarks, obstacles = self.envs.remotes[thread_id].recv()
-                    
-                    # 거리 맵 생성
-                    self.tdd.tdd_model.plot_distance_map(
-                        start_pos, 
-                        self.env_args["map_size"], 
-                        landmarks, 
-                        obstacles, 
-                        f"thread_{thread_id}_agent_{agent_id}"
-                    )
-            self.tdd.rollout_buffer.end_rollout()
+            for i in range(5):
+                for thread_id in range(4):
+                    for agent_id in range(self.num_agents):
+                        # 랜드마크와 장애물 정보 가져오기
+                        self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
+                        landmarks, obstacles = self.envs.remotes[thread_id].recv()
+                        
+                        # 현재 에이전트의 위치를 목표로 설정
+                        start_pos = agent_positions[thread_id, agent_id]
+                        # 거리 맵 생성
+                        self.tdd_runner.tdd_model.plot_distance_map(
+                            start_pos, 
+                            self.env_args["map_size"], 
+                            landmarks, 
+                            obstacles, 
+                            f"thread_{thread_id}_agent_{agent_id}_start_pos_{start_pos[0]}_{start_pos[1]}"
+                        )
+                agent_positions[thread_id, agent_id] = [start_pos[0] + self.env_args["map_size"]/2 * i, start_pos[1] + self.env_args["map_size"]/2 * i]
+            
+            self.tdd_runner.rollout_buffer.end_rollout()
             print("Representation learning 완료. 거리 맵이 생성되었습니다.")
             
-            # 모든 환경 프로세스 종료
+            # # 모든 환경 프로세스 종료
             # self.envs.close()
             # if hasattr(self, 'eval_envs') and self.eval_envs is not None:
             #     self.eval_envs.close()
@@ -615,13 +689,14 @@ class OffPolicyBaseRunner:
             )
 
         self.buffer.insert(data)
+        
         """ TDD update """
         if self.tdd_args is not None:
             extracted_obs = obs[:, :, 2:4] # 에이전트 개인의 현재 절대 좌표만 뽑기 (n_agents, n_threads, 2)
             extracted_next_obs = next_obs[:, :, 2:4] # 에이전트 개인의 다음 절대 좌표만 뽑기 (n_threads, n_agents, 2)
-            self.tdd.rollout_buffer.add_observation({"obs": extracted_obs, "next_obs": extracted_next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
+            self.tdd_runner.rollout_buffer.add_observation({"obs": extracted_obs, "next_obs": extracted_next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
             if np.any(np.all(dones, axis=1)):
-                self.tdd.rollout_buffer.end_rollout()
+                self.tdd_runner.rollout_buffer.end_rollout()
         """ TDD update 끝 """
 
     def sample_actions(self, available_actions=None):

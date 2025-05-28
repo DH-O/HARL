@@ -83,8 +83,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 self.n_rollout_threads
         )
     
-    def update_tdd_model(self):
-        self.tdd_model.update(self.rollout_buffer.rollout_history)
+    def update_tdd_model(self, step=None, total_steps=None, is_warm_up=False):
+        self.tdd_model.update(self.rollout_buffer.rollout_history, step=step, total_steps=total_steps, is_warm_up=is_warm_up)
         
     def normalize_rewards(self, rewards):
         """리워드를 정규화합니다."""
@@ -159,10 +159,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                         dists = mrn_distance(phi_x, phi_y)  # (n_rollout_threads, n_rollout_threads)
                         
                         int_rew[agent_id] += dists.cpu().numpy()
-            
-        int_rew = np.array(int_rew).transpose(2, 0, 1)  # (n_rollout_threads, n_agents, 1)
         
         # 리워드 정규화
         # int_rew = self.normalize_rewards(int_rew)
         
-        return int_rew
+        return np.array(int_rew).transpose(2, 0, 1)  # (n_rollout_threads, n_agents, 1)

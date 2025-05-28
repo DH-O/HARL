@@ -34,7 +34,7 @@ train:
   use_proper_time_limits: True
   # if set, load models from this directory; otherwise, randomly initialise the models
   model_dir: ~
-  # /home/ka2hyeon/ext_storage_link/SSD1/MARL/HARL/examples/results/pettingzoo_mpe/simple_spread_v2-continuous/hasac/Map_8_Max_100_N_2/seed-00077-2025-05-13-00-20-35/models
+  # /home/ka2hyeon/ext_storage_link/SSD1/MARL/HARL/examples/results/pettingzoo_mpe/simple_spread_v2-continuous/hasac/Map_3_N_2_max_200_use_wall/seed-00077-2025-05-23-18-10-51/models
   
 eval:
   # whether to use evaluation

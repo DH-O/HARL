@@ -217,7 +217,7 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
             landmarks = []
             obstacles = []
             for entity in env.env.aec_env.env.env.env.env.world.landmarks:
-                if entity.name == 'wall':
+                if entity.name.startswith('wall'):
                     obstacles.append({
                         'position': entity.state.p_pos,
                         'size': entity.size
