@@ -31,9 +31,13 @@ from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
 from harl.runners.tdd_runner import TddRunner
 """ TDD 관련 끝 """
 
-def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size, warmup=False):
+def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size, step=None, warmup=False):
         save_dir =  save_dir + "/exploration_metric"
-        os.makedirs(save_dir, exist_ok=True)
+        if step is not None:
+            save_dir = os.path.join(save_dir, f'step_{step}')
+            os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
+        else:
+            os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
         # chunk_size = 3
         max_graphs_per_row = 3
         n_cols = min(max_graphs_per_row, n_agents)
@@ -93,7 +97,7 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir
             if warmup:
                 base_filename = f'warmup_rollout_trajectories_envs_{env_id}'
             else:
-                base_filename = f'rollout_trajectories_envs_{env_id}'
+                base_filename = f'rollout_trajectories_envs_{env_id}_step_{step}'
             file_path = os.path.join(save_dir, f'{base_filename}.png')
             counter = 1
             while os.path.exists(file_path):
@@ -334,9 +338,8 @@ class OffPolicyBaseRunner:
             rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
             target_dim = [2, 3] # 랜드마크와 아군의 수와 상관 없이, 커서 에이전트의 위치는 2, 3에 있다.
         """ exploration metric 끝 """
-        
-        self.tdd_runner.rollout_buffer.end_rollout()
-        self.tdd_runner.rollout_buffer.clear_rollout_history()
+        if self.tdd_args is not None:
+            self.tdd_runner.rollout_buffer.clear()
         first_policy_learn = True
         
         for step in range(1, steps + 1):
@@ -397,19 +400,22 @@ class OffPolicyBaseRunner:
             )
             self.insert(data)   # 여기서 이제 롤아웃 버퍼도 야무지게 충전 중일 것이다.
             
+            prev_obs = obs
             obs = new_obs
             share_obs = new_share_obs
             available_actions = new_available_actions
             
+            dones_env = np.all(dones, axis=1)  # if all agents are done, then env is done
+            
             if self.tdd_args is not None:
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
-                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) * self.num_agents * self.n_rollout_threads > self.tdd_args["train"]["batch_size"]:
+                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) * self.num_agents * self.n_rollout_threads > self.tdd_args["train"]["batch_size"] and any(dones_env):
                     if first_policy_learn:
                         first_policy_learn = False
                     else:
                         self.tdd_runner.update_tdd_model(step=step, total_steps=steps)
-                        agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
+                        agent_positions = prev_obs[:, :, 2:4]  # (n_threads, n_agents, 2)
                         # 각 환경과 에이전트별로 거리 맵 생성
             
                         for thread_id in range(self.n_rollout_threads):
@@ -430,8 +436,7 @@ class OffPolicyBaseRunner:
                                     step=step
                                 )
                     
-                        self.tdd_runner.rollout_buffer.end_rollout()
-                        self.tdd_runner.rollout_buffer.clear_rollout_history()
+                    self.tdd_runner.rollout_buffer.clear()
                     
                     if self.algo_args["train"]["use_linear_lr_decay"]:  # False
                         if self.share_param:
@@ -488,10 +493,14 @@ class OffPolicyBaseRunner:
                         self.log_file.flush()
                         self.done_episodes_rewards = []
                 self.save()
+                """ exploration metric """
+                if self.args["use_exploration_metric"]:
+                    plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"], step)
+                """ exploration metric 끝 """
         
         """ exploration metric """
         if self.args["use_exploration_metric"]:
-            plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"])
+            plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"], step)
         """ exploration metric 끝 """
         
     def warmup(self):
@@ -567,7 +576,7 @@ class OffPolicyBaseRunner:
             agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
             # 각 환경과 에이전트별로 거리 맵 생성
             for i in range(5):
-                for thread_id in range(4):
+                for thread_id in range(3):
                     for agent_id in range(self.num_agents):
                         # 랜드마크와 장애물 정보 가져오기
                         self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
@@ -581,11 +590,14 @@ class OffPolicyBaseRunner:
                             self.env_args["map_size"], 
                             landmarks, 
                             obstacles, 
-                            f"thread_{thread_id}_agent_{agent_id}_start_pos_{start_pos[0]}_{start_pos[1]}"
+                            f"thread_{thread_id}_agent_{agent_id}_start_pos_{start_pos[0]}_{start_pos[1]}",
+                            step=0
                         )
-                agent_positions[thread_id, agent_id] = [start_pos[0] + self.env_args["map_size"]/2 * i, start_pos[1] + self.env_args["map_size"]/2 * i]
+                new_pos_x = np.clip(start_pos[0] + self.env_args["map_size"]/2 * i, -self.env_args["map_size"], self.env_args["map_size"])
+                new_pos_y = np.clip(start_pos[1] + self.env_args["map_size"]/2 * i, -self.env_args["map_size"], self.env_args["map_size"])
+                agent_positions[thread_id, agent_id] = [new_pos_x, new_pos_y]
             
-            self.tdd_runner.rollout_buffer.end_rollout()
+            self.tdd_runner.rollout_buffer.clear()
             print("Representation learning 완료. 거리 맵이 생성되었습니다.")
             
             # # 모든 환경 프로세스 종료

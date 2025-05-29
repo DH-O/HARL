@@ -214,7 +214,7 @@ class TDDModel:
         
         # 단일 에이전트로 데이터 추출
         obss[0] = np.array([[step['obs'] for step in episode] for episode in data[0]])  # (n_episode, max_cycles, n_rollout_threads, 2)
-        obss[0] = torch.from_numpy(obss[0]).to(self.device)
+        obss[0] = torch.from_numpy(obss[0]).to(self.device) # 이거 def run에서 처음 호출되었을 때 86, 200, 3, 2로 호출당하긴 했다.
         next_obss[0] = np.array([[step['next_obs'] for step in episode] for episode in data[0]])  # (n_episode, max_cycles, n_rollout_threads, 2)
         next_obss[0] = torch.from_numpy(next_obss[0]).to(self.device)
         n_trajs, n_steps, n_threads = obss[0].shape[:3]
@@ -324,7 +324,7 @@ class TDDModel:
                       f"s_grad_norm {s_grad_norm:.2e} | p_grad_norm {p_grad_norm:.2e}\n")
                 start_time = end_time
                 
-    def plot_distance_map(self, start_pos, map_size, landmarks, obstacles, agent_id=None, step=None):
+    def plot_distance_map(self, start_pos, map_size, landmarks, obstacles, suffix=None, step=None):
         """목표 지점으로부터의 거리를 시각화합니다.
         Args:
             start_pos: (tuple) 시작 위치 (x, y)
@@ -394,7 +394,7 @@ class TDDModel:
                 )
                 plt.gca().add_patch(obstacle_circle)
             
-            plt.title(f'Distance Map from Start (with Landmarks and Wall) - {agent_id}')
+            plt.title(f'Distance Map from Start (with Landmarks and Wall) - {suffix}')
             plt.xlabel('X')
             plt.ylabel('Y')
             plt.legend()
@@ -403,10 +403,8 @@ class TDDModel:
             if step is not None:
                 save_dir = os.path.join(self.run_dir, f'step_{step}')
                 os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
-                save_path = os.path.join(save_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{agent_id}.png')
+                save_path = os.path.join(save_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{suffix}.png')
             else:
-                save_path = os.path.join(self.run_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{agent_id}.png')
+                save_path = os.path.join(self.run_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{suffix}.png')
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
-            
-            print(f"{agent_id}의 거리 맵이 저장되었습니다: {save_path}")

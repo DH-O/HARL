@@ -138,10 +138,11 @@ class RolloutBuffer:
             return self.all_rollouts_mean_state[agent_id]  # (n_rollout_threads, 2) 형태의 리스트
         return self.all_rollouts_mean_state  # [agent_id][thread_id] 형태의 2차원 리스트
 
-    def clear_rollout_history(self):
+    def clear(self):
         """Clear rollout history."""
         for agent_id in range(self.num_agents):
             self.rollout_history[agent_id].clear()
+            self.current_rollout_states[agent_id].clear()
 
     def plot_mean_state_trajectory(self, save_dir="rollout_mean_state_plots", map_size=1.0):
         """
