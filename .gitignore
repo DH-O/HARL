@@ -417,3 +417,6 @@ tags
 harl/runs/*
 examples/runs/*
 runs/*
+results/*
+for_tensorboard/*
+examples/results/*

@@ -8,6 +8,7 @@ import numpy as np
 import setproctitle
 """ exploration metric """
 import matplotlib.pyplot as plt
+import matplotlib
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 """ exploration metric 끝 """
@@ -37,14 +38,12 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir
             save_dir = os.path.join(save_dir, f'step_{step}')
             os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
         else:
-            os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
-        # chunk_size = 3
+            os.makedirs(save_dir, exist_ok=True)
         max_graphs_per_row = 3
         n_cols = min(max_graphs_per_row, n_agents)
         n_rows = int(np.ceil(n_agents / n_cols))
-        # env_ids = list(rollout_data.keys())
         
-        for env_id in range(n_roll_out_threads):
+        for env_id in range(min(n_roll_out_threads, 5)):
             # 각 환경별로 새로운 figure 생성
             fig, axes = plt.subplots(
                 nrows=n_rows, 
@@ -61,8 +60,6 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir
             elif n_cols == 1:
                 # shape: (n_rows, ) -> (n_rows, 1)
                 axes = axes.reshape(n_rows, 1)
-            # elif n_rows == 1 or n_cols == 1:
-            #     axes = axes.reshape(-1, 1) if n_rows == 1 else axes.reshape(1, -1)
         
             for agent_id in range(n_agents):
                 row = agent_id // n_cols
@@ -72,7 +69,7 @@ def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir
                 steps = agent_traj[:, 2]
                 norm_steps = (steps - np.min(steps)) / (np.max(steps) - np.min(steps) + 1e-8)
                 
-                colormap = cm.get_cmap('viridis')
+                colormap = matplotlib.colormaps['viridis']
                 colors = colormap(norm_steps)
                 
                 axes[row, col].scatter(agent_traj[:, 0], agent_traj[:, 1], c=colors, s=10, alpha=0.7)
@@ -283,9 +280,14 @@ class OffPolicyBaseRunner:
                 if (
                     self.envs.action_space[agent_id].__class__.__name__ == "Box"
                 ):  # Differential entropy can be negative
-                    self.target_entropy.append(
-                        -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
-                    )
+                    if self.tdd_args["train"]["use_state_entropy"]:
+                        self.target_entropy.append(
+                            -np.prod(self.envs.observation_space[agent_id].shape[0] - 2 * (self.num_agents - 1))    # (상, 하, 좌, 우) 라서 5차원
+                        )
+                    else:
+                        self.target_entropy.append(
+                            -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
+                        )
                 else:  # Discrete entropy is always positive. Thus we set the max possible entropy as the target entropy
                     self.target_entropy.append(
                         -0.98
@@ -311,36 +313,41 @@ class OffPolicyBaseRunner:
         """Run the training (or rendering) pipeline."""
         if self.algo_args["render"]["use_render"]:  # render, not train
             self.render()
+            self.close()  # 렌더링 후 리소스 정리
             return
         self.train_episode_rewards = np.zeros(
             self.n_rollout_threads
         )
         
-        """ 이거 뭔가 목적이 있어서 추가했던 것 같은데 뭐였지? """
+        """ use_eval 안 쓸 때 활용하는 것으로 보인다 """
         self.done_episodes_rewards = []
-        """ 음? """
+        """  """
         
         # warmup
         print("start warmup")
         obs, share_obs, available_actions = self.warmup()
         print("finish warmup, start training")
+        
         # train and eval
         steps = (
-            self.algo_args["train"]["num_env_steps"]    # 무려 20M
-            // self.n_rollout_threads # 이걸 나의 경우 2로 나눈셈
+            self.algo_args["train"]["num_env_steps"]    # 지금은 10^7 사용중
+            // self.n_rollout_threads
         )
+        
         update_num = int(  # update number per train    # update_per_train이 1이고, train_invercal이 50일 경우, 매 50스텝마다 50번 학습. 만일 update_per_train이 2라면 100번 학습.
             self.algo_args["train"]["update_per_train"]
             * self.algo_args["train"]["train_interval"]
         )
+        
         """ exploration metric """
         if self.args["use_exploration_metric"]:
-            rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
-            target_dim = [2, 3] # 랜드마크와 아군의 수와 상관 없이, 커서 에이전트의 위치는 2, 3에 있다.
+            rollout_data_for_metric = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
+            target_dim = [2, 3] # 랜드마크와 아군의 수와 상관 없이, 커서 에이전트의 절대좌표는 obs에서 [2, 3]에 있다.
         """ exploration metric 끝 """
+        
         if self.tdd_args is not None:
             self.tdd_runner.rollout_buffer.clear()
-        first_policy_learn = True
+        rollout_history_count = 0
         
         for step in range(1, steps + 1):
             actions = self.get_actions(
@@ -365,19 +372,30 @@ class OffPolicyBaseRunner:
                 for env_id in range(self.n_rollout_threads):
                     for agent_id in range(self.num_agents):
                         xy_coords = new_obs[env_id, agent_id, target_dim]
-                        rollout_data[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
+                        rollout_data_for_metric[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
             """ exploration metric 끝"""
             
             """ TDD intrinsic reward """
             if self.tdd_args is not None:
                 # 전체 스텝의 절반까지만 intrinsic reward 계산
-                if step <= steps // self.tdd_args["train"]["coeff_stop_ratio"]:
-                    # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
-                    int_rew_coef = 1.0 - (step / (steps // self.tdd_args["train"]["coeff_stop_ratio"]))
-                    pos = obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
-                    new_pos = new_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
-                    int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2))
-                    rewards += int_rew * int_rew_coef * self.tdd_args["train"]["coeff_magnitude"]
+                if self.tdd_args["train"]["coeff_stop_ratio"] == 0:
+                    int_rew_coeff = 1.0
+                else:
+                    if step <= steps // self.tdd_args["train"]["coeff_stop_ratio"]:
+                        # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
+                        int_rew_coeff = 1.0 - (step / (steps // self.tdd_args["train"]["coeff_stop_ratio"]))
+                
+                pos = obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
+                new_pos = new_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
+                int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                if self.tdd_args["train"]["use_suppression_reward"]:
+                    # 조금 무서운게 rewards 왜 다 똑같은 걸로 나오냐?
+                    rewards = (1 - int_rew_coeff) * rewards + int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # size (n_threads, n_agents, 1)
+                else:
+                    if self.tdd_args["train"]["off_extrinsic_reward"]:
+                        rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                    else:
+                        rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
             """ TDD intrinsic reward 끝 """
             
             next_share_obs = new_share_obs.copy()
@@ -406,51 +424,65 @@ class OffPolicyBaseRunner:
             available_actions = new_available_actions
             
             dones_env = np.all(dones, axis=1)  # if all agents are done, then env is done
-            
             if self.tdd_args is not None:
+                if any(dones_env):
+                    rollout_history_count += 1
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
-                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) * self.num_agents * self.n_rollout_threads > self.tdd_args["train"]["batch_size"] and any(dones_env):
-                    if first_policy_learn:
-                        first_policy_learn = False
-                    else:
-                        self.tdd_runner.update_tdd_model(step=step, total_steps=steps)
-                        agent_positions = prev_obs[:, :, 2:4]  # (n_threads, n_agents, 2)
-                        # 각 환경과 에이전트별로 거리 맵 생성
-            
-                        for thread_id in range(self.n_rollout_threads):
-                            for agent_id in range(self.num_agents):
+                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= self.tdd_args["train"]["update_interval_of_rollout_history"]:
+                    self.tdd_runner.update_tdd_model()
+                    
+                    start_pos_ls = []
+                    for i in range(self.num_agents):
+                        start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][0]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                        start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
+                    start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                    
+                    midle_pos_ls = []
+                    for i in range(self.num_agents):
+                        midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                        midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
+                    midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                    
+                    end_pos_ls = []
+                    for i in range(self.num_agents):
+                        end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                        end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
+                    end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                    
+                    pos_ls = [start_pos, midle_pos, end_pos]
+                    pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
+                    
+                    # 각 환경과 에이전트별로 거리 맵 생성
+                    for thread_id in range(min(self.n_rollout_threads, 3)):
+                        for agent_id in range(self.num_agents):
+                            for pos_idx in range(3):
                                 # 랜드마크와 장애물 정보 가져오기
                                 self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
                                 landmarks, obstacles = self.envs.remotes[thread_id].recv()
                                 
-                                # 현재 에이전트의 위치를 목표로 설정
-                                start_pos = agent_positions[thread_id, agent_id]
+                                # 목표점 가져오기
+                                pos = pos_arr[pos_idx][thread_id, agent_id]
+                                
                                 # 거리 맵 생성
-                                self.tdd_runner.tdd_model.plot_distance_map(
-                                    start_pos, 
-                                    self.env_args["map_size"], 
+                                self.tdd_runner.plot_distance_map(
+                                    pos, 
+                                    self.env_args["map_size"],
+                                    agent_id,
                                     landmarks, 
                                     obstacles, 
-                                    f"thread_{thread_id}_agent_{agent_id}_start_pos_{start_pos[0]}_{start_pos[1]}",
+                                    f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
                                     step=step
                                 )
-                    
                     self.tdd_runner.rollout_buffer.clear()
-                    
-                    if self.algo_args["train"]["use_linear_lr_decay"]:  # False
-                        if self.share_param:
-                            self.actor[0].lr_decay(step, steps)
-                        else:
-                            for agent_id in range(self.num_agents):
-                                self.actor[agent_id].lr_decay(step, steps)
-                        self.critic.lr_decay(step, steps)
+                
+                if step % self.algo_args["train"]["train_interval"] == 0:
                     for _ in range(update_num): # update_num은 50이다.
                         critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
                         self.writter.add_scalar("critic_loss", critic_loss, step)
                         self.writter.add_scalar("actor_loss", actor_loss, step)
-                        self.writter.add_scalar("alpha_loss", alpha_loss, step)    
-            
+                        self.writter.add_scalar("alpha_loss", alpha_loss, step)
+                    self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
             else:
                 if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
                     if self.algo_args["train"]["use_linear_lr_decay"]:  # False
@@ -467,6 +499,7 @@ class OffPolicyBaseRunner:
                         self.writter.add_scalar("alpha_loss", alpha_loss, step)
             
             if step % self.algo_args["train"]["eval_interval"] == 0:
+                print(f"rollout_history_count: {rollout_history_count}")
                 cur_step = (
                     self.algo_args["train"]["warmup_steps"]
                     + step * self.n_rollout_threads
@@ -495,71 +528,179 @@ class OffPolicyBaseRunner:
                 self.save()
                 """ exploration metric """
                 if self.args["use_exploration_metric"]:
-                    plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"], step)
+                    plot_rollout_trajectory(rollout_data_for_metric, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"], step)
                 """ exploration metric 끝 """
         
         """ exploration metric """
         if self.args["use_exploration_metric"]:
-            plot_rollout_trajectory(rollout_data, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"], step)
+            plot_rollout_trajectory(rollout_data_for_metric, self.n_rollout_threads, self.num_agents, self.save_dir, self.env_args["map_size"], step)
         """ exploration metric 끝 """
         
-    def warmup(self):
+        # 학습이 완료된 후 리소스 정리
+        self.close()
+
+    def warmup(self):        
         """Warmup the replay buffer with random actions"""
-        warmup_steps = (
-            self.algo_args["train"]["warmup_steps"] # petting_zoo_mpe기준 10000.
-            // self.n_rollout_threads
-        )
-        # obs: (n_threads, n_agents, dim)
-        # share_obs: (n_threads, n_agents, dim)
-        obs, share_obs, available_actions = self.envs.reset()
-        # 궤적 기록용 변수
-        rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(self.n_rollout_threads)}
-        for step in range(warmup_steps):
-            # action: (n_threads, n_agents, dim)
-            actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
-            (
-                new_obs,
-                new_share_obs,
-                rewards,
-                dones,
-                infos,
-                new_available_actions,
-            ) = self.envs.step(actions) # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
-            
-            next_obs = new_obs.copy()
-            next_share_obs = new_share_obs.copy()
-            next_available_actions = new_available_actions.copy()
-            data = (
-                share_obs,
-                obs.transpose(1, 0, 2), # 리플레이 버퍼에 데이터를 저장할 때, 에이전트 단위로 데이터를 저장하기 위함    # 롤아웃 버퍼도 저렇게 해야하는지 좀 고민이 되긴 하다
-                actions.transpose(1, 0, 2),
-                available_actions.transpose(1, 0, 2)
-                if len(np.array(available_actions).shape) == 3
-                else None,
-                rewards,
-                dones,
-                infos,
-                next_share_obs,
-                next_obs,   # 얘는 그런데 에이전트 단위로 저장 안 해도 되나보다?
-                next_available_actions.transpose(1, 0, 2)
-                if len(np.array(available_actions).shape) == 3
-                else None,
+        if self.tdd_args["train"]["use_synthetic_data"]:
+            n_trajs = self.tdd_args["train"]["n_trajs_for_synthetic_data"]
+        else:
+            warmup_steps = (
+                self.algo_args["train"]["warmup_steps"] # petting_zoo_mpe기준 10000.
+                // self.n_rollout_threads
             )
-            self.insert(data)
-            obs = new_obs
-            share_obs = new_share_obs
-            available_actions = new_available_actions
-            
-            # 위치 기록
-            for env_id in range(self.n_rollout_threads):
-                for agent_id in range(self.num_agents):
-                    xy_coords = obs[env_id, agent_id, 2:4]  # x, y 좌표
-                    rollout_data[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
+            n_rollout_threads = self.n_rollout_threads
         
+        if self.tdd_args["train"]["use_synthetic_data"]:
+            # xy_coords: (n_trajs, n_agents, 2)의 차원인데, 각각의 데이터는 -0.8 * env_args["map_size"], -0.8 * env_args["map_size"]를 중심으로 하고 반경 env_args["agent_size"] * 3 안에서 랜덤하게 샘플링되도록 코딩
+            def get_const_pos(pos_list, center, bounds):
+                if not pos_list:
+                    return center
+                return center + np.random.uniform(-bounds, bounds, 2)
+            
+            respawn_coords = np.zeros((n_trajs, self.num_agents, 2))
+            rollout_data = {traj_id: {agent_id: [] for agent_id in range(self.num_agents)} for traj_id in range(n_trajs)}
+            for i in range(n_trajs):
+                for j in range(self.num_agents):
+                    respawn_coords[i, j] = get_const_pos([respawn_coords[i, j]], [-0.8 * self.env_args["map_size"], -0.8 * self.env_args["map_size"]], self.env_args["agent_size"] * 3)
+
+            steps_per_segment = 180  # 각 구간별 step 수
+            for i in range(n_trajs):
+                for j in range(self.num_agents):
+                    x, y = respawn_coords[i, j]
+                    traj = []
+                    step_idx = 0
+                    # 0. 처음 좌표 저장
+                    rollout_data[i][j].append([x, y, step_idx])
+                    traj.append([x, y])  # 1중 리스트로 저장
+                    
+                    # 1. y좌표가 map_size - agent_size * 1.5까지 위로 직진 (x는 고정)
+                    start_y = y
+                    end_y1 = self.env_args["map_size"] - self.env_args["agent_size"] * 1.5
+                    for step in range(steps_per_segment - 1):
+                        ratio = step / steps_per_segment
+                        cur_y = start_y + (end_y1 - start_y) * ratio
+                        pos = get_const_pos([[x, cur_y]], [x, cur_y], self.env_args["agent_size"] * 3)
+                        rollout_data[i][j].append([pos[0], pos[1], step_idx])
+                        step_idx += 1
+                        traj.append([pos[0], pos[1]])
+                    y = end_y1
+
+                    # 2. x좌표가 map_size / 2 - agent_size / 2 - map_size / 10까지 오른쪽 직진 (y는 고정)
+                    start_x = x
+                    end_x2 = self.env_args["map_size"] / 2 - self.env_args["agent_size"] / 2 - self.env_args["map_size"] / 10
+                    for step in range(steps_per_segment):
+                        ratio = step / steps_per_segment
+                        cur_x = start_x + (end_x2 - start_x) * ratio
+                        pos = get_const_pos([[cur_x, y]], [cur_x, y], self.env_args["agent_size"] * 3)
+                        rollout_data[i][j].append([pos[0], pos[1], step_idx])
+                        step_idx += 1
+                        traj.append([pos[0], pos[1]])
+                    x = end_x2
+
+                    # 3. y좌표가 -map_size + agent_size * 1.5까지 아래로 직진 (x는 고정)
+                    start_y = y
+                    end_y3 = -self.env_args["map_size"] + self.env_args["agent_size"] * 1.5
+                    for step in range(steps_per_segment):
+                        ratio = step / steps_per_segment
+                        cur_y = start_y + (end_y3 - start_y) * ratio
+                        pos = get_const_pos([[x, cur_y]], [x, cur_y], self.env_args["agent_size"] * 3)
+                        rollout_data[i][j].append([pos[0], pos[1], step_idx])
+                        step_idx += 1
+                        traj.append([pos[0], pos[1]])
+                    y = end_y3
+                    
+                    # 4. x좌표가 map_size - agent_size * 1.5까지 오른쪽 직진 (y는 고정)
+                    start_x = x
+                    end_x4 = self.env_args["map_size"] - self.env_args["agent_size"] * 1.5
+                    for step in range(steps_per_segment):
+                        ratio = step / steps_per_segment
+                        cur_x = start_x + (end_x4 - start_x) * ratio
+                        pos = get_const_pos([[cur_x, y]], [cur_x, y], self.env_args["agent_size"] * 3)
+                        rollout_data[i][j].append([pos[0], pos[1], step_idx])
+                        step_idx += 1
+                        traj.append([pos[0], pos[1]])
+                    x = end_x4
+                    
+                    # 5. y좌표가 map_size - agent_size * 1.5까지 위로 직진 (x는 고정)
+                    start_y = y
+                    end_y5 = self.env_args["map_size"] - self.env_args["agent_size"] * 1.5
+                    for step in range(steps_per_segment):
+                        ratio = step / steps_per_segment
+                        cur_y = start_y + (end_y5 - start_y) * ratio
+                        pos = get_const_pos([[x, cur_y]], [x, cur_y], self.env_args["agent_size"] * 3)
+                        rollout_data[i][j].append([pos[0], pos[1], step_idx])
+                        step_idx += 1
+                        traj.append([pos[0], pos[1]])
+                    y = end_y5
+                    
+                    # traj 저장한거 이제 롤아웃 버퍼에 저장하자
+                    for t in range(len(traj) - 1):
+                        obs_dict = {
+                            "obs": np.array([traj[t]], dtype=np.float32),
+                            "next_obs": np.array([traj[t + 1]], dtype=np.float32),
+                            "dones": np.array([False])
+                        }
+                        self.tdd_runner.rollout_buffer.current_rollout_states[j].append(obs_dict)
+                    obs_dict = {
+                        "obs": np.array([traj[-1]], dtype=np.float32),
+                        "next_obs": np.array([traj[0]], dtype=np.float32),
+                        "dones": np.array([True])
+                    }
+                    self.tdd_runner.rollout_buffer.current_rollout_states[j].append(obs_dict)
+                self.tdd_runner.rollout_buffer.end_rollout()
+        else:
+            # obs: (n_threads, n_agents, dim)
+            # share_obs: (n_threads, n_agents, dim)
+            obs, share_obs, available_actions = self.envs.reset()
+            # 궤적 기록용 변수
+            rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(n_rollout_threads)}
+            
+            for step in range(warmup_steps):
+                # action: (n_threads, n_agents, dim)
+                actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
+                (
+                    new_obs,
+                    new_share_obs,
+                    rewards,
+                    dones,
+                    infos,
+                    new_available_actions,
+                ) = self.envs.step(actions) # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
+            
+                next_obs = new_obs.copy()
+                next_share_obs = new_share_obs.copy()
+                next_available_actions = new_available_actions.copy()
+                data = (
+                    share_obs,
+                    obs.transpose(1, 0, 2), # 리플레이 버퍼에 데이터를 저장할 때, 에이전트 단위로 데이터를 저장하기 위함    # 롤아웃 버퍼도 저렇게 해야하는지 좀 고민이 되긴 하다
+                    actions.transpose(1, 0, 2),
+                    available_actions.transpose(1, 0, 2)
+                    if len(np.array(available_actions).shape) == 3
+                    else None,
+                    rewards,
+                    dones,
+                    infos,
+                    next_share_obs,
+                    next_obs,   # 얘는 그런데 에이전트 단위로 저장 안 해도 되나보다?
+                    next_available_actions.transpose(1, 0, 2)
+                    if len(np.array(available_actions).shape) == 3
+                    else None,
+                )
+                self.insert(data)
+                obs = new_obs
+                share_obs = new_share_obs
+                available_actions = new_available_actions
+            
+                # 위치 기록
+                for env_id in range(n_rollout_threads):
+                    for agent_id in range(self.num_agents):
+                        respawn_coords = obs[env_id, agent_id, 2:4]  # x, y 좌표
+                        rollout_data[env_id][agent_id].append([respawn_coords[0], respawn_coords[1], step])
+
         # warmup 궤적 시각화
         plot_rollout_trajectory(
             rollout_data, 
-            self.n_rollout_threads, 
+            n_trajs if self.tdd_args["train"]["use_synthetic_data"] else n_rollout_threads, 
             self.num_agents, 
             save_dir=self.run_dir,  # 또는 원하는 경로
             map_size=self.env_args["map_size"],
@@ -576,7 +717,7 @@ class OffPolicyBaseRunner:
             agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
             # 각 환경과 에이전트별로 거리 맵 생성
             for i in range(5):
-                for thread_id in range(3):
+                for thread_id in range(min(self.n_rollout_threads, 5)):
                     for agent_id in range(self.num_agents):
                         # 랜드마크와 장애물 정보 가져오기
                         self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
@@ -585,34 +726,34 @@ class OffPolicyBaseRunner:
                         # 현재 에이전트의 위치를 목표로 설정
                         start_pos = agent_positions[thread_id, agent_id]
                         # 거리 맵 생성
-                        self.tdd_runner.tdd_model.plot_distance_map(
+                        self.tdd_runner.plot_distance_map(
                             start_pos, 
-                            self.env_args["map_size"], 
+                            self.env_args["map_size"],
+                            agent_id,
                             landmarks, 
                             obstacles, 
                             f"thread_{thread_id}_agent_{agent_id}_start_pos_{start_pos[0]}_{start_pos[1]}",
                             step=0
                         )
-                new_pos_x = np.clip(start_pos[0] + self.env_args["map_size"]/2 * i, -self.env_args["map_size"], self.env_args["map_size"])
-                new_pos_y = np.clip(start_pos[1] + self.env_args["map_size"]/2 * i, -self.env_args["map_size"], self.env_args["map_size"])
+                new_pos_x = np.clip(start_pos[0] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
+                new_pos_y = np.clip(start_pos[1] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                 agent_positions[thread_id, agent_id] = [new_pos_x, new_pos_y]
             
             self.tdd_runner.rollout_buffer.clear()
             print("Representation learning 완료. 거리 맵이 생성되었습니다.")
-            
-            # # 모든 환경 프로세스 종료
-            # self.envs.close()
-            # if hasattr(self, 'eval_envs') and self.eval_envs is not None:
-            #     self.eval_envs.close()
-            
-            # # 메인 프로세스 강제 종료
-            # os._exit(0)  # sys.exit(0) 대신 os._exit(0) 사용
         """ TDD update 끝 """
-        
-        
-        return obs, share_obs, available_actions
+        if self.tdd_args["train"]["use_synthetic_data"]:
+            # 모든 환경 프로세스 종료
+            self.envs.close()
+            if hasattr(self, 'eval_envs') and self.eval_envs is not None:
+                self.eval_envs.close()
+            
+            # 메인 프로세스 강제 종료
+            os._exit(0)  # sys.exit(0) 대신 os._exit(0) 사용
+        else:
+            return obs, share_obs, available_actions
 
-    def insert(self, data):
+    def insert(self, data, is_warmup=False):
         (
             share_obs,  # (n_threads, n_agents, share_obs_dim)
             obs,  # (n_agents, n_threads, obs_dim)
@@ -699,8 +840,13 @@ class OffPolicyBaseRunner:
                 next_obs.transpose(1, 0, 2),  # 트랜스포즈 거치면 (n_agents, n_threads, next_obs_dim)
                 next_available_actions,  # None or (n_agents, n_threads, next_action_number)
             )
-
-        self.buffer.insert(data)
+        if is_warmup:
+            if self.tdd_args["off_extrinsic_reward"]:
+                pass
+            else:
+                self.buffer.insert(data)
+        else:
+            self.buffer.insert(data)
         
         """ TDD update """
         if self.tdd_args is not None:
@@ -785,11 +931,12 @@ class OffPolicyBaseRunner:
         raise NotImplementedError
 
     @torch.no_grad()
-    def eval(self, step):
+    def eval(self, cur_step):
         """Evaluate the model"""
         eval_episode_rewards = []
         one_episode_rewards = []
-        for eval_i in range(self.algo_args["eval"]["n_eval_rollout_threads"]):
+        n_eval_rollout_threads = min(self.algo_args["eval"]["n_eval_rollout_threads"], 5)
+        for eval_i in range(n_eval_rollout_threads):
             one_episode_rewards.append([])
             eval_episode_rewards.append([])
         eval_episode = 0
@@ -804,28 +951,145 @@ class OffPolicyBaseRunner:
 
         eval_obs, eval_share_obs, eval_available_actions = self.eval_envs.reset()
 
+        # 궤적 기록용 변수
+        rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(n_eval_rollout_threads)}
+        temp_rollout_buffer = [[] for _ in range(self.num_agents)]
+        
+        # intrinsic rewards와 obs 데이터 저장을 위한 변수
+        eval_data_dir = os.path.join(self.save_dir, "eval", f"cur_step_{cur_step}")
+        os.makedirs(eval_data_dir, exist_ok=True)
+        
+        # Video/GIF 관련 변수
+        gif_frames = []
+        video_writer = None
+        
         while True:
+            temp_eval_data_dir = os.path.join(self.save_dir, "eval", f"cur_step_{cur_step}", f"eval_episode_{eval_episode}")
+            os.makedirs(temp_eval_data_dir, exist_ok=True)
             eval_actions = self.get_actions(
                 eval_obs, available_actions=eval_available_actions, add_random=False
             )
             (
-                eval_obs,
+                next_eval_obs,   # (n_threads, n_agents, obs_dim)
                 eval_share_obs,
                 eval_rewards,
-                eval_dones,
+                eval_dones, # (n_threads, n_agents)
                 eval_infos,
                 eval_available_actions,
             ) = self.eval_envs.step(eval_actions)
-            for eval_i in range(self.algo_args["eval"]["n_eval_rollout_threads"]):
+            
+            # intrinsic rewards 계산 (TDD가 있는 경우)
+            if self.tdd_args is not None:
+                pos = eval_obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
+                new_pos = next_eval_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
+                int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), is_eval=True, temp_rollout_buffer=temp_rollout_buffer, n_rollout_threads=n_eval_rollout_threads)
+                
+                # intrinsic rewards 저장 (10 스텝마다만 저장)
+                if one_episode_len[0] % 10 == 0:
+                    for eval_i in range(n_eval_rollout_threads):
+                        data_file = os.path.join(temp_eval_data_dir, f'rollout_{eval_i}_data.txt')
+                        with open(data_file, 'a') as f:
+                            f.write(f"Step {one_episode_len[eval_i]}:\n")
+                            f.write(f"Intrinsic Rewards: {int_rew[eval_i]}\n")
+                            f.write(f"Obs: {eval_obs[eval_i]}\n")
+                            f.write(f"New Obs: {next_eval_obs[eval_i]}\n")
+                            f.write("-" * 50 + "\n")
+            
+            for eval_i in range(n_eval_rollout_threads):
                 one_episode_rewards[eval_i].append(eval_rewards[eval_i])
+                for agent_id in range(self.num_agents):
+                    xy_coords = eval_obs[eval_i, agent_id, 2:4]
+                    rollout_data[eval_i][agent_id].append([xy_coords[0], xy_coords[1], cur_step])
 
+            for agent_id in range(self.num_agents):
+                temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
+            
             one_episode_len += 1
+            eval_obs = next_eval_obs
+            
+            # 롤아웃 길이의 10등분 지점에서 distance map 생성
+            if self.tdd_args is not None:
+                for eval_i in range(n_eval_rollout_threads):
+                    total_steps = one_episode_len[eval_i]
+                    if total_steps > 0:
+                        if total_steps % (self.env_args["max_cycles"] // 10) == 0 or total_steps < 10:
+                            # 랜드마크와 장애물 정보 가져오기
+                            self.eval_envs.remotes[eval_i].send(("get_landmarks_and_obstacles", None))
+                            landmarks, obstacles = self.eval_envs.remotes[eval_i].recv()
+                            
+                            for agent_id in range(self.num_agents):
+                                current_pos = eval_obs[eval_i, agent_id, 2:4]
+                                self.tdd_runner.plot_distance_map(
+                                current_pos,
+                                self.env_args["map_size"],
+                                agent_id,
+                                landmarks,
+                                obstacles,
+                                f"eval_thread_{eval_i}_agent_{agent_id}_step_{total_steps}",
+                                step=cur_step
+                            )
 
+            # 비디오/GIF 생성 (최적화)
+            if one_episode_len[0] % 2 == 0:  # 2 스텝마다만 프레임 저장
+                self.eval_envs.remotes[0].send(("render", None))
+                frame = self.eval_envs.remotes[0].recv()
+                
+                # 에이전트 정보를 표시할 이미지 생성
+                info_frame = np.ones((frame.shape[0], 300, 3), dtype=np.uint8) * 255
+                
+                # 에이전트 정보 텍스트 추가
+                for agent_id in range(self.num_agents):
+                    pos = eval_obs[0, agent_id, 2:4]
+                    int_reward = float(int_rew[0][agent_id]) if self.tdd_args is not None else 0.0
+                    ext_reward = float(eval_rewards[0][agent_id][0])
+                    
+                    # 각 정보를 별도의 텍스트로 표시
+                    cv2.putText(info_frame, f"Agent {agent_id}", (5, 15 + agent_id * 100), # 5, 15 + agent_id * 100은 텍스트의 위치
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)   # 0.14가 크기
+                    cv2.putText(info_frame, f"Position: ({pos[0]:.2f}, {pos[1]:.2f})", (5, 35 + agent_id * 100), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    cv2.putText(info_frame, f"Intrinsic Reward: {int_reward:.4f}", (5, 55 + agent_id * 100), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    cv2.putText(info_frame, f"Extrinsic Reward: {ext_reward:.4f}", (5, 75 + agent_id * 100), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                
+                # 원본 프레임과 정보 프레임 합치기
+                combined_frame = np.hstack((frame, info_frame))
+                gif_frames.append(combined_frame)
+                
+                if video_writer is None:
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    frame_height, frame_width = combined_frame.shape[:2]
+                    video_writer = cv2.VideoWriter(
+                        os.path.join(temp_eval_data_dir, f'eval_video.mp4'),
+                        fourcc,
+                        5,  # FPS를 10에서 5로 줄임
+                        (frame_width, frame_height)
+                    )
+                
+                frame_bgr = cv2.cvtColor(combined_frame, cv2.COLOR_RGB2BGR)
+                video_writer.write(frame_bgr)   # 가끔 여기서 
+                
             eval_dones_env = np.all(eval_dones, axis=1)
 
-            for eval_i in range(self.algo_args["eval"]["n_eval_rollout_threads"]):
+            for eval_i in range(n_eval_rollout_threads):
                 if eval_dones_env[eval_i]:
+                    # 궤적 시각화
+                    plot_rollout_trajectory(rollout_data, 
+                                            n_eval_rollout_threads, 
+                                            self.num_agents, 
+                                            temp_eval_data_dir, 
+                                            self.env_args["map_size"],
+                                            step=cur_step,
+                                            warmup=False)
+                    # 비디오/GIF 저장
+                    if video_writer is not None:
+                        video_writer.release()
+                        imageio.mimsave(os.path.join(temp_eval_data_dir, f'eval_animation.gif'), gif_frames, duration=0.2)  # duration 증가
+                    else:
+                        raise AssertionError("video_writer is None")
                     eval_episode += 1
+                    
                     if "smac" in self.args["env"]:
                         if "v2" in self.args["env"]:
                             if eval_infos[eval_i][0]["battle_won"]:
@@ -843,6 +1107,14 @@ class OffPolicyBaseRunner:
                     episode_lens.append(one_episode_len[eval_i].copy())
                     one_episode_len[eval_i] = 0
 
+            if np.any(eval_dones_env):
+                if not np.all(eval_dones_env):
+                    raise AssertionError("eval_dones_env is not all True")
+                rollout_data[eval_i] = {agent_id: [] for agent_id in range(self.num_agents)}
+                gif_frames = []
+                video_writer = None
+                temp_rollout_buffer = [[] for _ in range(self.num_agents)]
+            
             if eval_episode >= self.algo_args["eval"]["eval_episodes"]:
                 # eval_log returns whether the current model should be saved
                 eval_episode_rewards = np.concatenate(
@@ -872,7 +1144,7 @@ class OffPolicyBaseRunner:
                             map(
                                 str,
                                 [
-                                    step,
+                                    cur_step,
                                     eval_avg_rew,
                                     eval_avg_len,
                                     eval_battles_won / eval_episode,
@@ -887,7 +1159,7 @@ class OffPolicyBaseRunner:
                             map(
                                 str,
                                 [
-                                    step,
+                                    cur_step,
                                     eval_avg_rew,
                                     eval_avg_len,
                                     eval_score_cnt / eval_episode,
@@ -898,16 +1170,18 @@ class OffPolicyBaseRunner:
                     )
                 else:
                     self.log_file.write(
-                        ",".join(map(str, [step, eval_avg_rew, eval_avg_len])) + "\n"
+                        ",".join(map(str, [cur_step, eval_avg_rew, eval_avg_len])) + "\n"
                     )
                 self.log_file.flush()
                 self.writter.add_scalar(
-                    "eval_average_episode_rewards", eval_avg_rew, step
+                    "eval_average_episode_rewards", eval_avg_rew, cur_step
                 )
                 self.writter.add_scalar(
-                    "eval_average_episode_length", eval_avg_len, step
+                    "eval_average_episode_length", eval_avg_len, cur_step
                 )
                 break
+        
+        del rollout_data, temp_rollout_buffer
 
     @torch.no_grad()
     def render(self):
@@ -1076,11 +1350,22 @@ class OffPolicyBaseRunner:
         """Close environment, writter, and log file."""
         # post process
         if self.algo_args["render"]["use_render"]:
-            self.envs.close()
+            if hasattr(self.envs, 'close'):
+                self.envs.close()
+            # pygame 리소스 정리
+            if hasattr(self.envs, 'viewer') and self.envs.viewer is not None:
+                import pygame
+                pygame.quit()
         else:
-            self.envs.close()
+            if hasattr(self.envs, 'close'):
+                self.envs.close()
             if self.algo_args["eval"]["use_eval"] and self.eval_envs is not self.envs:
-                self.eval_envs.close()
+                if hasattr(self.eval_envs, 'close'):
+                    self.eval_envs.close()
+                # eval 환경의 pygame 리소스 정리
+                if hasattr(self.eval_envs, 'viewer') and self.eval_envs.viewer is not None:
+                    import pygame
+                    pygame.quit()
             self.writter.export_scalars_to_json(str(self.log_dir + "/summary.json"))
             self.writter.close()
             self.log_file.close()

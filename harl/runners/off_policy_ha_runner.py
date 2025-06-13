@@ -3,18 +3,19 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from harl.runners.off_policy_base_runner import OffPolicyBaseRunner
+from harl.runners.tdd_runner import TddRunner
 
 
 class OffPolicyHARunner(OffPolicyBaseRunner):
     """Runner for off-policy HA algorithms."""
 
     def train(self):
-        """Train the model"""
+        """ Train the model """ # batch가 주로 1000이다
         self.total_it += 1  # train 할때마다 하나씩 증가
         data = self.buffer.sample()
         (
             sp_share_obs,  # EP: (batch_size, dim), FP: (n_agents * batch_size, dim)
-            sp_obs,  # (n_agents, batch_size, dim)
+            sp_obs,  # (n_agents, batch_size, dim)  dim이 22인 이유는 에이전트가 3개, landmark가 3개, 벽이 2개 있으므로 (본인의 속도 2차원, 본인의 절대 좌표 2차원, 아군까지의 상대변위 4차원, 랜드마크까지의 상대변위 10차원, 통신값 4차원) 총 22차원이다.
             sp_actions,  # (n_agents, batch_size, dim)
             sp_available_actions,  # (n_agents, batch_size, dim)
             sp_reward,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
@@ -30,7 +31,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
         self.critic.turn_on_grad()  # 부모 클래스의 마지막(twin_continuous_q_critic.py)에 있는 메소드. grad를 하나하나 켜준다.   
         if self.args["algo"] == "hasac":
             next_actions = []
-            next_logp_actions = []
+            next_entropy_terms = []
             for agent_id in range(self.num_agents):
                 next_action, next_logp_action = self.actor[
                     agent_id
@@ -41,7 +42,14 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     else None,
                 )
                 next_actions.append(next_action)
-                next_logp_actions.append(next_logp_action)
+                # if self.tdd_runner is not None:
+                #     # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
+                #     # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.
+                #     # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
+                #     # next_entropy_terms.append(self.tdd_runner.calculate_state_entropy(sp_next_obs[agent_id]))
+                #     next_entropy_terms.append(next_logp_action)
+                # else:
+                next_entropy_terms.append(next_logp_action)
             critic_loss = self.critic.train(
                 sp_share_obs,
                 sp_actions,
@@ -51,7 +59,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 sp_term,
                 sp_next_share_obs,
                 next_actions,
-                next_logp_actions,
+                next_entropy_terms,
                 sp_gamma,
                 self.value_normalizer,
             )

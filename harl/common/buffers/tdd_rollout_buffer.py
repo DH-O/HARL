@@ -24,11 +24,13 @@ class RolloutBuffer:
         self.n_rollout_threads = n_rollout_threads
         
         # Rollout statistics
-        self.rollout_count = np.zeros(num_agents, dtype=np.int)
-        self.all_rollouts_mean_state = [None for _ in range(num_agents)]
+        self.rollout_count = np.zeros(self.num_agents, dtype=np.int)
+        self.all_rollouts_mean_state = [None for _ in range(self.num_agents)]
         self.current_rollout_states = [[] for _ in range(self.num_agents)]
-        # self.rollout_history = [deque(maxlen=512) for _ in range(self.num_agents)]
         self.rollout_history = [[] for _ in range(self.num_agents)]
+        self.prev_obs_shape = None
+        self.prev_next_obs_shape = None
+        self.prev_dones_shape = None
         
     def add_observation(self, obs):
         """Add observation to current rollout.
@@ -38,6 +40,15 @@ class RolloutBuffer:
         """
         
         for agent_id in range(self.num_agents):
+            if self.prev_obs_shape is None and self.prev_next_obs_shape is None and self.prev_dones_shape is None:
+                self.prev_obs_shape = obs["obs"][agent_id].shape
+                self.prev_next_obs_shape = obs["next_obs"][agent_id].shape
+                self.prev_dones_shape = obs["dones"][agent_id].shape
+            else:
+                assert self.prev_obs_shape == obs["obs"][agent_id].shape, f"Observation shape mismatch: {self.prev_obs_shape} != {obs['obs'][agent_id].shape}"
+                assert self.prev_next_obs_shape == obs["next_obs"][agent_id].shape, f"Next observation shape mismatch: {self.prev_next_obs_shape} != {obs['next_obs'][agent_id].shape}"
+                assert self.prev_dones_shape == obs["dones"][agent_id].shape, f"Dones shape mismatch: {self.prev_dones_shape} != {obs['dones'][agent_id].shape}"
+            
             self.current_rollout_states[agent_id].append({"obs": obs["obs"][agent_id], "next_obs": obs["next_obs"][agent_id], "dones": obs["dones"][agent_id]})
     
     def compute_rollout_mean_state(self, agent_id=None):
@@ -119,8 +130,8 @@ class RolloutBuffer:
             all_rollouts_mean_state: updated mean state of all rollouts
         """
         # 모든 에이전트의 롤아웃 종료 및 업데이트
-        current_rollout_mean_states = self.compute_rollout_mean_state()
-        self.update_all_rollouts_mean_state(current_rollout_mean_states)
+        # current_rollout_mean_states = self.compute_rollout_mean_state()
+        # self.update_all_rollouts_mean_state(current_rollout_mean_states)
         for agent_id in range(self.num_agents):
             self.rollout_history[agent_id].append(self.current_rollout_states[agent_id])  # [agent_id]해서 (n_rollout_steps, n_rollout_threads, n_truncated_obs_dim)
             self.current_rollout_states[agent_id] = []

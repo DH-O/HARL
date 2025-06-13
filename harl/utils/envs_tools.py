@@ -133,7 +133,7 @@ def make_eval_env(env_name, seed, n_threads, env_args):
                     PettingZooMPEEnv,
                 )
 
-                env = PettingZooMPEEnv(env_args)
+                env = PettingZooMPEEnv({**env_args, "render_mode": "rgb_array"})    # human에서 rgb_array로 바꿈
             elif env_name == "gym":
                 from harl.envs.gym.gym_env import GYMEnv
 

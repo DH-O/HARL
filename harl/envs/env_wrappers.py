@@ -200,6 +200,9 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                 remote.send(fr)
             elif data == "human":
                 env.render(mode=data)
+            else:
+                fr = env.render()
+                remote.send(fr)
         elif cmd == "close":
             env.close()
             remote.close()

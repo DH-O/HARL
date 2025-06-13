@@ -37,6 +37,8 @@ conda activate harl
 git clone https://github.com/PKU-MARL/HARL.git
 cd HARL
 pip install -e .
+pip install opencv-python imageio matplotlib # add by DHO
+pip install numpy==1.21.0
 ```
 
 

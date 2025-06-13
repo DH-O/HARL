@@ -3,9 +3,9 @@ network:
   # input feature dimension
   input_dim: 2
   # latent dimension
-  latents_dim: 512
+  latents_dim: 128
   # output dimension
-  output_dim: 32
+  output_dim: 64
   # activation function
   activation_function: relu
 
@@ -16,38 +16,38 @@ tdd:
 # Training Parameters
 train:
   # total number of learning steps of warmup
-  warmup_steps: 12 # 5000을 권장
+  warmup_steps: 5000 # 5000을 권장
   # total number of learning steps of learning
-  learning_steps: 12 # 4로 해보자
+  learning_steps: 5000 # 4로 해보자
   # warmup logging interval
-  warmup_logging_interval: 1
+  warmup_logging_interval: 500
   # learning logging interval
-  learning_logging_interval: 1
+  learning_logging_interval: 500
   # batch size for training
-  batch_size: 512
-  # learning_rate_init
-  learning_rate_init: 5e-6
-  # learning_rate_final
-  learning_rate_final: 1e-7
-  # lr_decay_type
-  lr_decay_type: cosine
-  # grad_norm_decay_type
-  grad_norm_decay_type: cosine
-  # max_grad_norm_init
-  max_grad_norm_init: 0.01
-  # max_grad_norm_final
-  max_grad_norm_final: 0.001
-  # grad_norm_decay_type
-  grad_norm_decay_type: cosine
-  # coeff stop ratio
-  coeff_stop_ratio: 1
+  batch_size: 1024 # 512가 원래 값
+  # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
+  coeff_stop_ratio: 0
   # coeff magnitude
   coeff_magnitude: 1
-  # tdd with mean state
-  tdd_with_mean_state: False
-    # learning rate
-  learning_rate: 3e-4
-  # maximum gradient norm
-  max_grad_norm: 5e-1
+  # learning rate
+  learning_rate: 1e-3
+  # use inter-agent intrinsic reward
+  use_inter_agent_int_rew: False
+  # coeff for inter-agent intrinsic reward
+  coeff_inter_agent_int_rew: 0
+  # off the extrinsic reward
+  off_extrinsic_reward: True
+  # update interval of rollout history
+  update_interval_of_rollout_history: 3000 # 3000 * 800 = 2400000
+  # use synthetic data
+  use_synthetic_data: True
+  # number of trajectories for synthetic data
+  n_trajs_for_synthetic_data: 3000
+  # use independent nets
+  use_independent_nets: True
+  # use suppression reward
+  use_suppression_reward: False
   # use state entropy
   use_state_entropy: False
+  # tdd with mean state
+  tdd_with_mean_state: False
