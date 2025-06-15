@@ -188,7 +188,7 @@ class TDDModel:
                              n_cum_steps[0]: {n_cum_steps[0]}, n_cum_steps[1]: {n_cum_steps[1]}, n_cum_steps[2]: {n_cum_steps[2]}\
                              n_threads[0]: {n_threads[0]}, n_threads[1]: {n_threads[1]}, n_threads[2]: {n_threads[2]}")
         
-        for i in range(self.warmup_steps if is_warm_up else self.learning_steps):
+        for i in range(self.warmup_steps // n_threads[0] if is_warm_up else self.learning_steps // n_threads[0]):
             total_loss = 0.0
             
             for agent_id in range(len(data)):
@@ -247,8 +247,8 @@ class TDDModel:
                         'gradients/potential_net_norm': p_grad_norm,
                     }
                     thread_metrics_list.append(current_metrics)
-                    
-                if i % (self.warmup_logging_interval if is_warm_up else self.learning_logging_interval) == 0:
+                
+                if i % (self.warmup_logging_interval // n_threads[0] if is_warm_up else self.learning_logging_interval // n_threads[0]) == 0:
                     # 모든 스레드의 메트릭 평균 계산
                     avg_thread_metrics = {}
                     for key in thread_metrics_list[0].keys():
@@ -257,7 +257,7 @@ class TDDModel:
                     
                     metrics.update(avg_thread_metrics)
             
-            if i % (self.warmup_logging_interval if is_warm_up else self.learning_logging_interval) == 0:
+            if i % (self.warmup_logging_interval // n_threads[0] if is_warm_up else self.learning_logging_interval // n_threads[0]) == 0:
                 print(f"Step {i} - Average Loss: {total_loss / (len(data) * n_threads[0])}")
                 # 전체 에이전트의 평균 메트릭 계산
                 avg_metrics = {

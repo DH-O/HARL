@@ -418,5 +418,5 @@ harl/runs/*
 examples/runs/*
 runs/*
 results/*
-for_tensorboard/*
 examples/results/*
+examples/for_tensorboard/*

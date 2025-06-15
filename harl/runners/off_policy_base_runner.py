@@ -310,6 +310,7 @@ class OffPolicyBaseRunner:
         
         
     def run(self):
+        print(self.run_dir)
         """Run the training (or rendering) pipeline."""
         if self.algo_args["render"]["use_render"]:  # render, not train
             self.render()
@@ -326,6 +327,7 @@ class OffPolicyBaseRunner:
         # warmup
         print("start warmup")
         obs, share_obs, available_actions = self.warmup()
+        # obs, share_obs, available_actions = self.envs.reset()
         print("finish warmup, start training")
         
         # train and eval
@@ -430,24 +432,24 @@ class OffPolicyBaseRunner:
                     rollout_history_count += 1
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
-                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads):  # 3000 // 20 = 150
+                if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads) and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > 0:  # 3000 // 20 = 150
                     self.tdd_runner.update_tdd_model()
                     
                     start_pos_ls = []
                     for i in range(self.num_agents):
-                        start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][0]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                        start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
                         start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
                     start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
                     
                     midle_pos_ls = []
                     for i in range(self.num_agents):
-                        midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                        midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
                         midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
                     midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
                     
                     end_pos_ls = []
                     for i in range(self.num_agents):
-                        end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                        end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
                         end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
                     end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
                     
@@ -685,6 +687,11 @@ class OffPolicyBaseRunner:
             for step in range(warmup_steps):
                 # action: (n_threads, n_agents, dim)
                 actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
+                
+                # actions (n_threads, n_agents, dim)부분에서 0번째 에이전트의 액션을 복사해서 나머지 1번째, 2번째 액션에 붙여넣고 싶다. 아래 코딩해봐라
+                actions[:, 1, :] = actions[:, 0, :]
+                actions[:, 2, :] = actions[:, 0, :]
+                
                 (
                     new_obs,
                     new_share_obs,
