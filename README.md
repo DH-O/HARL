@@ -33,7 +33,7 @@ For more details, please refer to our [HARL](https://jmlr.org/papers/v25/23-0488
 ```shell
 conda create -n harl python=3.8
 conda activate harl
-# Install pytorch>=1.9.0 (CUDA>=11.0) manually
+# Install pytorch>=2.4.1 (CUDA>=11.0) manually
 git clone https://github.com/PKU-MARL/HARL.git
 cd HARL
 pip install -e .

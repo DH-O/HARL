@@ -173,11 +173,12 @@ class TDDModel:
         """ 모든 에이전트에 대한 데이터 후처리 """
         for agent_id in range(len(data)):
             obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2)
-            # data[0][0][0]['obs'].shape가 (1,1,2)f로 나오긴 했는데 음
+            # data[0][0][0]['obs'].shape가 (1,1,2)로 나오긴 했는데 음
             obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
             next_obss[agent_id] = np.array([[step['next_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
             next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
             n_trajs[agent_id], n_cum_steps[agent_id], n_threads[agent_id] = obss[agent_id].shape[:3]
+        
         # 설마 에이전트별 데이터 수가 다른 경우에 대한 예외처리
         if n_trajs[0] != n_trajs[1] or n_cum_steps[0] != n_cum_steps[1] or n_threads[0] != n_threads[1]\
             or n_trajs[0] != n_trajs[2] or n_cum_steps[0] != n_cum_steps[2] or n_threads[0] != n_threads[2]\
@@ -189,8 +190,10 @@ class TDDModel:
         
         for i in range(self.warmup_steps if is_warm_up else self.learning_steps):
             total_loss = 0.0
+            
             for agent_id in range(len(data)):
                 thread_metrics_list = []
+                """ 각 스레드별로 traj_idx, step_idx를 랜덤하게 선택하고, 그 인덱스에 대한 obs와 goal을 추출한다. """
                 for thread_idx in range(n_threads[0]):
                     # Sample mini-batch data (positive pairs)
                     traj_idx = torch.randint(n_trajs[0], (self.batch_size,), device=self.device)   # 0 ~ n_trajs-1 중 랜덤 선택

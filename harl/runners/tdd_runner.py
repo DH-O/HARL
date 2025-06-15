@@ -111,7 +111,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
     def _compute_mrn_distance(self, current_state, prev_states, agent_id, n_rollout_threads):
         """현재 상태와 이전 상태들 간의 MRN 거리를 계산합니다."""
         current_state = torch.tensor(current_state, device=self.device).float()
-        phi_y = self.tdd_model.g_encoder[agent_id](current_state)
+        phi_y = self.tdd_model.s_encoder[agent_id](current_state)
         
         prev_states = torch.tensor(np.array(prev_states), device=self.device).float()
         prev_states = prev_states.view(-1, prev_states.shape[-1])
@@ -254,7 +254,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 start_pos_tensor_batch = start_pos_tensor.unsqueeze(0).repeat(len(batch_positions), 1)
                 
                 # 인코딩 수행
-                phi_g = self.tdd_model.g_encoder[agent_id](positions_tensor)    # (100, 32)
+                phi_g = self.tdd_model.s_encoder[agent_id](positions_tensor)    # (100, 32)
                 phi_start = self.tdd_model.s_encoder[agent_id](start_pos_tensor_batch)    # (100, 32)
                 
                 batch_dists = mrn_distance(phi_start[:, None], phi_g[None, :])  #(100, 10)

@@ -8,6 +8,8 @@ network:
   output_dim: 64
   # activation function
   activation_function: relu
+  # use independent nets
+  use_independent_nets: True
 
 tdd:
   # discount factor
@@ -26,25 +28,23 @@ train:
   # batch size for training
   batch_size: 1024 # 512가 원래 값
   # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
-  coeff_stop_ratio: 0
+  coeff_stop_ratio: 1
   # coeff magnitude
-  coeff_magnitude: 1
+  coeff_magnitude: 10
   # learning rate
   learning_rate: 1e-3
   # use inter-agent intrinsic reward
-  use_inter_agent_int_rew: False
+  use_inter_agent_int_rew: True 
   # coeff for inter-agent intrinsic reward
   coeff_inter_agent_int_rew: 0
   # off the extrinsic reward
-  off_extrinsic_reward: True
+  off_extrinsic_reward: False
   # update interval of rollout history
   update_interval_of_rollout_history: 3000 # 3000 * 800 = 2400000
   # use synthetic data
-  use_synthetic_data: True
+  use_synthetic_data: False
   # number of trajectories for synthetic data
   n_trajs_for_synthetic_data: 3000
-  # use independent nets
-  use_independent_nets: True
   # use suppression reward
   use_suppression_reward: False
   # use state entropy

@@ -17,9 +17,9 @@ train:
   # number of total steps
   num_env_steps: 10000000 # 10^7이 원래 값이다.
   # number of warmup steps
-  warmup_steps: 800000 # 10^4이 원래 값이다. 1000 * 900 = 900000
+  warmup_steps: 600000 # 10^4이 원래 값이다. 1000 * 600 = 600000
   # number of steps per train
-  train_interval: 50
+  train_interval: 500
   # ratio of training iterations to train_interval
   update_per_train: 1
   # logging interval (currently unused)

@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max900_n2048_warmup5000_learn5000_lr_1e-4_max_norm_0.01_batch_1024_latents_1024_output_64 --use_exploration_metric 1 --use_tdd 1
+python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max600_train_interval_500_coef10_inter_coeffdecay1_n_roll_fixed --use_exploration_metric 1 --use_tdd 1
