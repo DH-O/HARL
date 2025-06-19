@@ -111,11 +111,17 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
     def _compute_mrn_distance(self, current_state, prev_states, agent_id, n_rollout_threads):
         """현재 상태와 이전 상태들 간의 MRN 거리를 계산합니다."""
         current_state = torch.tensor(current_state, device=self.device).float()
-        phi_y = self.tdd_model.s_encoder[agent_id](current_state)
+        if self.tdd_args["network"]["use_independent_nets"]:
+            phi_y = self.tdd_model.s_encoder[agent_id](current_state)
+        else:
+            phi_y = self.tdd_model.s_encoder(current_state)
         
         prev_states = torch.tensor(np.array(prev_states), device=self.device).float()
         prev_states = prev_states.view(-1, prev_states.shape[-1])
-        phi_x = self.tdd_model.s_encoder[agent_id](prev_states)
+        if self.tdd_args["network"]["use_independent_nets"]:
+            phi_x = self.tdd_model.s_encoder[agent_id](prev_states)
+        else:
+            phi_x = self.tdd_model.s_encoder(prev_states)
         
         phi_y_repeated = phi_y.repeat(prev_states.shape[0] // n_rollout_threads, 1)
         dists = mrn_distance(phi_x, phi_y_repeated)
@@ -151,7 +157,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                     int_rew[agent_id].append(min_dists.cpu().numpy())
                     
                     # 에이전트 간 상호작용 고려
-                    if self.tdd_args["train"]["use_inter_agent_int_rew"]:
+                    if self.tdd_args["train"]["coeff_inter_agent_int_rew"] != 0:
                         other_min_dists_ls = []
                         for other_agent_id in range(self.num_agents):
                             if other_agent_id != agent_id:
@@ -166,7 +172,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         return np.array(int_rew).transpose(2, 0, 1)  # 저렇게 바꾸면 -> (n_rollout_threads, n_agents, 1)
     
-    def calculate_state_entropy(self, new_pos):
+    def calculate_state_entropy(self, new_pos, agent_id):
         batch_size = new_pos.shape[0]
         # 보통 1000, obs의 차원만큼 인풋이 들어올거다.
         rollout_buffer_all = self.rollout_buffer.rollout_history[:]    # (n_agents, n_timesteps, max_cycles, (n_rollout_threads, {'obs': (2,), 'next_obs': (2,)})) ex/ (3, 29, 800, (dict...))
@@ -178,7 +184,10 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         # 우선 new_pos의 절대좌표만 잘라내자
         new_pos_abs = new_pos[:, 2:4]
         new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
-        phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (n_rollout_threads, hidden_dim)
+        if self.tdd_args["network"]["use_independent_nets"]:
+            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (n_rollout_threads, hidden_dim)
+        else:
+            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (n_rollout_threads, hidden_dim)
         
         # 가장 최근 3000 스텝만 가져오기
         n_agents = len(rollout_buffer_all)
@@ -206,7 +215,10 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             new_pos_abs = new_pos_abs[:all_obs.shape[0]]
             
         all_obs = torch.tensor(all_obs, device=self.device).float()
-        phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
+        if self.tdd_args["network"]["use_independent_nets"]:
+            phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
+        else:
+            phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
         
         dists = mrn_distance(phi_x[:, None], phi_y[None, :])    # (batch_size, bathch_size) 여기서는 일단 행이 나타내는게 각 phi_x이며, 열이 바로 각 phi_y이다. 그래서 행별로 각 phi_x부터 모든 phi_y와의 거리를 계산한다.
         _, indices = torch.topk(dists, k=11, largest=False, dim=0)  # dim=0을 수행함으로써, 각 phi_y에 대해 가장 가까운 10개의 phi_x를 찾는다.
@@ -254,8 +266,12 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 start_pos_tensor_batch = start_pos_tensor.unsqueeze(0).repeat(len(batch_positions), 1)
                 
                 # 인코딩 수행
-                phi_g = self.tdd_model.s_encoder[agent_id](positions_tensor)    # (100, 32)
-                phi_start = self.tdd_model.s_encoder[agent_id](start_pos_tensor_batch)    # (100, 32)
+                if self.tdd_args["network"]["use_independent_nets"]:
+                    phi_g = self.tdd_model.s_encoder[agent_id](positions_tensor)    # (100, 32)
+                    phi_start = self.tdd_model.s_encoder[agent_id](start_pos_tensor_batch)    # (100, 32)
+                else:
+                    phi_g = self.tdd_model.s_encoder(positions_tensor)    # (100, 32)
+                    phi_start = self.tdd_model.s_encoder(start_pos_tensor_batch)    # (100, 32)
                 
                 batch_dists = mrn_distance(phi_start[:, None], phi_g[None, :])  #(100, 10)
                 dists[i:end_idx] = torch.diag(batch_dists).cpu().numpy().squeeze()

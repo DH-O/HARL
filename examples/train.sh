@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max400_train_interval_1000_offext_sameobs_history_1000 --use_exploration_metric 1 --use_tdd 1
+python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max600_trInt1000_coef10_dec1_his3000_WallColl_OptFix_SameNet --use_exploration_metric 1 --use_tdd 1

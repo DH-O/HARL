@@ -367,6 +367,8 @@ class OffPolicyBaseRunner:
                 actions
             )  # rewards: (n_threads, n_agents, 1); dones: (n_threads, n_agents)
             # available_actions: (n_threads, ) of None or (n_threads, n_agents, action_number)
+            # dones를 판별하는 기준은 mpe에서는 그냥 self.steps가 max_cycles 이상인지 검사해서 판별한다.
+            # dones 뜨면 new_obs는 초기 위치로 간다.
             next_obs = new_obs.copy()
             
             """ exploration metric """
@@ -390,7 +392,10 @@ class OffPolicyBaseRunner:
                 
                 pos = obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
                 new_pos = new_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
-                int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                if dones.any():
+                    int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                else:
+                    int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
                 if self.tdd_args["train"]["use_suppression_reward"]:
                     # 조금 무서운게 rewards 왜 다 똑같은 걸로 나오냐?
                     rewards = (1 - int_rew_coeff) * rewards + int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # size (n_threads, n_agents, 1)
@@ -481,9 +486,11 @@ class OffPolicyBaseRunner:
                 
                 if step % self.algo_args["train"]["train_interval"] == 0:
                     for _ in range(update_num): # update_num은 50이다.
-                        critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
+                        critic_loss, actor_loss_ls, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
                         self.writter.add_scalar("critic_loss", critic_loss, step)
-                        self.writter.add_scalar("actor_loss", actor_loss, step)
+                        self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                        self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                        self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
                         self.writter.add_scalar("alpha_loss", alpha_loss, step)
                     self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
             else:
@@ -688,10 +695,6 @@ class OffPolicyBaseRunner:
                 # action: (n_threads, n_agents, dim)
                 actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
                 
-                # actions (n_threads, n_agents, dim)부분에서 0번째 에이전트의 액션을 복사해서 나머지 1번째, 2번째 액션에 붙여넣고 싶다. 아래 코딩해봐라
-                actions[:, 1, :] = actions[:, 0, :]
-                actions[:, 2, :] = actions[:, 0, :]
-                
                 (
                     new_obs,
                     new_share_obs,
@@ -700,7 +703,7 @@ class OffPolicyBaseRunner:
                     infos,
                     new_available_actions,
                 ) = self.envs.step(actions) # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
-            
+                
                 next_obs = new_obs.copy()
                 next_share_obs = new_share_obs.copy()
                 next_available_actions = new_available_actions.copy()

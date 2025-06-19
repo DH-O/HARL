@@ -104,6 +104,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     agent_order = list(range(self.num_agents))
                 else:
                     agent_order = list(np.random.permutation(self.num_agents))
+                actor_loss_ls = [0 for _ in range(self.num_agents)]
                 for agent_id in agent_order:
                     self.actor[agent_id].turn_on_grad()
                     # train this agent
@@ -154,6 +155,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     actor_loss.backward()
                     self.actor[agent_id].actor_optimizer.step()
                     self.actor[agent_id].turn_off_grad()
+                    actor_loss_ls[agent_id] = actor_loss.item()
                     # train this agent's alpha
                     if self.algo_args["algo"]["auto_alpha"]:    # 이거 True
                         log_prob = (
@@ -245,4 +247,4 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 for agent_id in range(self.num_agents):
                     self.actor[agent_id].soft_update()
             self.critic.soft_update()
-        return critic_loss, actor_loss, alpha_loss
+        return critic_loss, actor_loss_ls, alpha_loss

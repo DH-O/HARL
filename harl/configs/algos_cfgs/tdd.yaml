@@ -9,7 +9,7 @@ network:
   # activation function
   activation_function: relu
   # use independent nets
-  use_independent_nets: True
+  use_independent_nets: False
 
 tdd:
   # discount factor
@@ -33,8 +33,6 @@ train:
   coeff_magnitude: 10
   # learning rate
   learning_rate: 1e-3
-  # use inter-agent intrinsic reward
-  use_inter_agent_int_rew: True 
   # coeff for inter-agent intrinsic reward
   coeff_inter_agent_int_rew: 0
   # off the extrinsic reward
@@ -45,6 +43,11 @@ train:
   use_synthetic_data: False
   # number of trajectories for synthetic data
   n_trajs_for_synthetic_data: 3000
+  # use reverse update
+  use_reverse_update: False
+  
+  
+  
   # use suppression reward
   use_suppression_reward: False
   # use state entropy

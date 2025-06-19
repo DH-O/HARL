@@ -112,13 +112,6 @@ class TDDModel:
         self.output_dim = self.args["network"]["output_dim"]
         self.device = device
         
-        if self.args["network"]["use_independent_nets"]:
-            self.potential_net = [PotentialNet(self.input_dim, self.latents_dim).to(device) for _ in range(num_agents)]
-            self.s_encoder = [S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device) for _ in range(num_agents)]
-        else:
-            self.potential_net = PotentialNet(self.input_dim, self.latents_dim).to(device)
-            self.s_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
-        
         # 기본 TDD 설정
         self.warmup_steps = self.args["train"]["warmup_steps"]
         self.learning_steps = self.args["train"]["learning_steps"]
@@ -133,19 +126,25 @@ class TDDModel:
         self.tdd_discount = self.args["tdd"]["tdd_discount"]
         
         if self.args["network"]["use_independent_nets"]:
-            self.optimizer = [torch.optim.Adam(
-                [
+            self.potential_net = [PotentialNet(self.input_dim, self.latents_dim).to(device) for _ in range(num_agents)]
+            self.s_encoder = [S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device) for _ in range(num_agents)]
+            self.optimizer = []
+            for agent_id in range(num_agents):
+                optimizer = torch.optim.Adam([
                     {"params": self.potential_net[agent_id].parameters(), "lr": self.learning_rate},
                     {"params": self.s_encoder[agent_id].parameters(), "lr": self.learning_rate}
-                ]
-            ) for agent_id in range(num_agents)]
+                ])
+                self.optimizer.append(optimizer)
         else:
+            self.potential_net = PotentialNet(self.input_dim, self.latents_dim).to(device)
+            self.s_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
             self.optimizer = torch.optim.Adam(
                 [
                     {"params": self.potential_net.parameters(), "lr": self.learning_rate},
                     {"params": self.s_encoder.parameters(), "lr": self.learning_rate}
                 ]
             )
+        
         # Tensorboard 설정
         if run_dir is not None:
             self.run_dir = run_dir
@@ -191,7 +190,7 @@ class TDDModel:
         for i in range(self.warmup_steps // n_threads[0] if is_warm_up else self.learning_steps // n_threads[0]):
             total_loss = 0.0
             
-            for agent_id in range(len(data)):
+            for agent_id in range(len(data)) if not self.args["train"]["use_reverse_update"] else range(len(data) - 1, -1, -1):
                 thread_metrics_list = []
                 """ 각 스레드별로 traj_idx, step_idx를 랜덤하게 선택하고, 그 인덱스에 대한 obs와 goal을 추출한다. """
                 for thread_idx in range(n_threads[0]):
@@ -206,9 +205,19 @@ class TDDModel:
                     obs = obss[agent_id][traj_idx, step_idx, thread_idx]  # (batch_size, 2)
                     goal = next_obss[agent_id][traj_idx, step_idx + intervals, thread_idx]  # (batch_size, 2)
                     
-                    c_g = self.potential_net[agent_id](goal)
-                    phi_s = self.s_encoder[agent_id](obs)
-                    phi_g = self.s_encoder[agent_id](goal)
+                    # 네트워크 접근 방식 결정
+                    if self.args["network"]["use_independent_nets"]:
+                        potential_net = self.potential_net[agent_id]
+                        s_encoder = self.s_encoder[agent_id]
+                        optimizer = self.optimizer[agent_id]
+                    else:
+                        potential_net = self.potential_net
+                        s_encoder = self.s_encoder
+                        optimizer = self.optimizer
+                    
+                    c_g = potential_net(goal)
+                    phi_s = s_encoder(obs)
+                    phi_g = s_encoder(goal)
                     
                     mrn_dists = mrn_distance(phi_s[:, None], phi_g[None, :])    # 대각선 값이 양의 샘플이다. s_t 와 g_t사이의 거리를 재는 것이기 때문이다.
                     # 위와 같이 함으로써 phi_g 각각에 대한 모든 phi_s와의 거리를 계산하며, 그게 모든 행에서 나타난다.
@@ -221,11 +230,11 @@ class TDDModel:
                     # 전체 loss: contrastive
                     total_loss += contrastive_loss
 
-                    self.optimizer[agent_id].zero_grad()
+                    # 그래디언트 계산
+                    optimizer.zero_grad()
                     contrastive_loss.backward()
-                    self.optimizer[agent_id].step()
-                    
-                    # grad norm 계산 및 출력
+
+                    # 그래디언트 norm 계산 (여기서 해야 함!)
                     def get_grad_norm(model):
                         total_norm = 0.0
                         for p in model.parameters():
@@ -234,13 +243,15 @@ class TDDModel:
                                 total_norm += param_norm.item() ** 2
                         return total_norm ** 0.5
 
-                    s_grad_norm = get_grad_norm(self.s_encoder[agent_id])
-                    p_grad_norm = get_grad_norm(self.potential_net[agent_id])
+                    s_grad_norm = get_grad_norm(s_encoder)
+                    p_grad_norm = get_grad_norm(potential_net)
+                    
+                    # 파라미터 업데이트
+                    optimizer.step()
                     
                     # 각 스레드별로 메트릭 계산 / 추후 모든 스레드의 메트릭에서 agent_id 고려할거니 여기서는 그냥 저장만
                     current_metrics = {
                         'loss/contrastive_loss': contrastive_loss.item(),
-                        'loss/total_loss': total_loss.item(),
                         
                         # 그래디언트 관련 메트릭
                         'gradients/s_encoder_norm': s_grad_norm,
@@ -262,7 +273,6 @@ class TDDModel:
                 # 전체 에이전트의 평균 메트릭 계산
                 avg_metrics = {
                     'avg/contrastive_loss': np.mean([metrics[f'agent_{j}/loss/contrastive_loss'] for j in range(len(data))]),
-                    'avg/total_loss': np.mean([metrics[f'agent_{j}/loss/total_loss'] for j in range(len(data))]),
                     'avg/s_encoder_grad_norm': np.mean([metrics[f'agent_{j}/gradients/s_encoder_norm'] for j in range(len(data))]),
                     'avg/potential_net_grad_norm': np.mean([metrics[f'agent_{j}/gradients/potential_net_norm'] for j in range(len(data))]),
                 }
