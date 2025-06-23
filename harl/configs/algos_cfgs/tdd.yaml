@@ -10,6 +10,8 @@ network:
   activation_function: relu
   # use independent nets
   use_independent_nets: False
+  # use central SD
+  use_central_SD: False
 
 tdd:
   # discount factor
@@ -18,9 +20,9 @@ tdd:
 # Training Parameters
 train:
   # total number of learning steps of warmup
-  warmup_steps: 5000 # 5000을 권장
+  warmup_steps: 8000 # 5000을 권장
   # total number of learning steps of learning
-  learning_steps: 5000 # 4로 해보자
+  learning_steps: 8000 # 4로 해보자
   # warmup logging interval
   warmup_logging_interval: 500
   # learning logging interval
@@ -28,7 +30,7 @@ train:
   # batch size for training
   batch_size: 1024 # 512가 원래 값
   # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
-  coeff_stop_ratio: 1
+  coeff_stop_ratio: 0
   # coeff magnitude
   coeff_magnitude: 10
   # learning rate
@@ -36,21 +38,24 @@ train:
   # coeff for inter-agent intrinsic reward
   coeff_inter_agent_int_rew: 0
   # off the extrinsic reward
-  off_extrinsic_reward: False
+  off_extrinsic_reward: True
   # update interval of rollout history
-  update_interval_of_rollout_history: 3000 # 3000 * 800 = 2400000
+  update_interval_of_rollout_history: 6000 # 3000 * 800 = 2400000
   # use synthetic data
   use_synthetic_data: False
   # number of trajectories for synthetic data
-  n_trajs_for_synthetic_data: 3000
+  n_trajs_for_synthetic_data: 1000
   # use reverse update
   use_reverse_update: False
-  
+  # use only one buffer
+  use_one_buffer: False
   
   
   # use suppression reward
   use_suppression_reward: False
   # use state entropy
   use_state_entropy: False
+  # use actor entropy
+  use_actor_entropy: False
   # tdd with mean state
   tdd_with_mean_state: False

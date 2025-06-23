@@ -280,11 +280,18 @@ class OffPolicyBaseRunner:
                 if (
                     self.envs.action_space[agent_id].__class__.__name__ == "Box"
                 ):  # Differential entropy can be negative
-                    if self.tdd_args is not None and self.tdd_args["train"]["use_state_entropy"]:
+                    if self.tdd_args is not None and self.tdd_args["train"]["use_state_entropy"] and not self.tdd_args["train"]["use_actor_entropy"]:
+                        print("use_state_entropy and not use_actor_entropy")
                         self.target_entropy.append(
-                            -np.prod(self.envs.observation_space[agent_id].shape[0] - 2 * (self.num_agents - 1))    # (상, 하, 좌, 우) 라서 5차원
+                            -np.prod(2 * (self.num_agents - 1))    # successor distance에 관여하는 차원이 2차원이다. 본인 제외한 모든 에이전트 사이와의 거리 갯수만큼 차원의 기준으로 정해봤다.
+                        )
+                    elif self.tdd_args is not None and self.tdd_args["train"]["use_actor_entropy"] and self.tdd_args["train"]["use_state_entropy"]:
+                        print("use_actor_entropy for decentralized and use_state_entropy for centralized")
+                        self.target_entropy.append(
+                            -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
                         )
                     else:
+                        print(f"tdd_args: {self.tdd_args}, use_state_entropy: {self.tdd_args['train']['use_state_entropy']}, use_actor_entropy: {self.tdd_args['train']['use_actor_entropy']}")
                         self.target_entropy.append(
                             -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
                         )
@@ -322,7 +329,6 @@ class OffPolicyBaseRunner:
         
         """ use_eval 안 쓸 때 활용하는 것으로 보인다 """
         self.done_episodes_rewards = []
-        """  """
         
         # warmup
         print("start warmup")
@@ -380,8 +386,7 @@ class OffPolicyBaseRunner:
             """ exploration metric 끝"""
             
             """ TDD intrinsic reward """
-            if self.tdd_args is not None:
-                
+            if self.tdd_args is not None:    
                 """ intrinsic reward 계수 계산 """
                 if self.tdd_args["train"]["coeff_stop_ratio"] == 0:
                     int_rew_coeff = 1.0
@@ -390,8 +395,12 @@ class OffPolicyBaseRunner:
                         # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
                         int_rew_coeff = 1.0 - (step / (steps // self.tdd_args["train"]["coeff_stop_ratio"]))
                 
-                pos = obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
-                new_pos = new_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
+                if self.tdd_args["network"]["use_central_SD"]:
+                    pos = share_obs
+                    new_pos = new_share_obs
+                else:
+                    pos = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
+                    new_pos = new_obs[:, :, 2:4] # new_obs: (n_threads, n_agents, obs_dim)
                 if dones.any():
                     int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
                 else:
@@ -440,49 +449,52 @@ class OffPolicyBaseRunner:
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads) and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > 0:  # 3000 // 20 = 150
                     self.tdd_runner.update_tdd_model()
                     
-                    start_pos_ls = []
-                    for i in range(self.num_agents):
-                        start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                        start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
-                    start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                    
-                    midle_pos_ls = []
-                    for i in range(self.num_agents):
-                        midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                        midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
-                    midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                    
-                    end_pos_ls = []
-                    for i in range(self.num_agents):
-                        end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                        end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
-                    end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                    
-                    pos_ls = [start_pos, midle_pos, end_pos]
-                    pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
-                    
-                    # 각 환경과 에이전트별로 거리 맵 생성
-                    for thread_id in range(min(self.n_rollout_threads, 3)):
-                        for agent_id in range(self.num_agents):
-                            for pos_idx in range(3):
-                                # 랜드마크와 장애물 정보 가져오기
-                                self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
-                                landmarks, obstacles = self.envs.remotes[thread_id].recv()
-                                
-                                # 목표점 가져오기
-                                pos = pos_arr[pos_idx][thread_id, agent_id]
-                                
-                                # 거리 맵 생성
-                                self.tdd_runner.plot_distance_map(
-                                    pos, 
-                                    self.env_args["map_size"],
-                                    agent_id,
-                                    landmarks, 
-                                    obstacles, 
-                                    f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
-                                    step=step
-                                )
-                    self.tdd_runner.rollout_buffer.clear()
+                    if self.tdd_args["network"]["use_central_SD"]:
+                        pass
+                    else:
+                        start_pos_ls = []
+                        for i in range(self.num_agents):
+                            start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                            start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
+                        start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                        
+                        midle_pos_ls = []
+                        for i in range(self.num_agents):
+                            midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                            midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
+                        midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                        
+                        end_pos_ls = []
+                        for i in range(self.num_agents):
+                            end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                            end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
+                        end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                        
+                        pos_ls = [start_pos, midle_pos, end_pos]
+                        pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
+                        
+                        # 각 환경과 에이전트별로 거리 맵 생성
+                        for thread_id in range(min(self.n_rollout_threads, 3)):
+                            for agent_id in range(self.num_agents):
+                                for pos_idx in range(3):
+                                    # 랜드마크와 장애물 정보 가져오기
+                                    self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
+                                    landmarks, obstacles = self.envs.remotes[thread_id].recv()
+                                    
+                                    # 목표점 가져오기
+                                    pos = pos_arr[pos_idx][thread_id, agent_id]
+                                    
+                                    # 거리 맵 생성
+                                    self.tdd_runner.plot_distance_map(
+                                        pos, 
+                                        self.env_args["map_size"],
+                                        agent_id,
+                                        landmarks, 
+                                        obstacles, 
+                                        f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
+                                        step=step
+                                    )
+                        self.tdd_runner.rollout_buffer.clear()
                 
                 if step % self.algo_args["train"]["train_interval"] == 0:
                     for _ in range(update_num): # update_num은 50이다.
@@ -763,27 +775,30 @@ class OffPolicyBaseRunner:
             # 에이전트의 위치만 추출 (x, y 좌표)
             agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
             # 각 환경과 에이전트별로 거리 맵 생성
-            for i in range(5):
-                for thread_id in range(min(self.n_rollout_threads, 5)):
-                    for agent_id in range(self.num_agents):
-                        # 랜드마크와 장애물 정보 가져오기
-                        self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
-                        landmarks, obstacles = self.envs.remotes[thread_id].recv()
-                        
-                        # 현재 에이전트의 위치를 목표로 설정
-                        start_pos = agent_positions[thread_id, agent_id]
-                        start_pos[0] = np.clip(start_pos[0] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
-                        start_pos[1] = np.clip(start_pos[1] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
-                        # 거리 맵 생성
-                        self.tdd_runner.plot_distance_map(
-                            start_pos, 
-                            self.env_args["map_size"],
-                            agent_id,
-                            landmarks, 
-                            obstacles, 
-                            f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]}_{start_pos[1]}",
-                            step=0
-                        )
+            if self.tdd_args["network"]["use_central_SD"]:
+                pass
+            else:
+                for i in range(5):
+                    for thread_id in range(min(self.n_rollout_threads, 5)):
+                        for agent_id in range(self.num_agents):
+                            # 랜드마크와 장애물 정보 가져오기
+                            self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
+                            landmarks, obstacles = self.envs.remotes[thread_id].recv()
+                            
+                            # 현재 에이전트의 위치를 목표로 설정
+                            start_pos = agent_positions[thread_id, agent_id]
+                            start_pos[0] = np.clip(start_pos[0] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
+                            start_pos[1] = np.clip(start_pos[1] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
+                            # 거리 맵 생성
+                            self.tdd_runner.plot_distance_map(
+                                start_pos, 
+                                self.env_args["map_size"],
+                                agent_id,
+                                landmarks, 
+                                obstacles, 
+                                f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]}_{start_pos[1]}",
+                                step=0
+                            )
             
             self.tdd_runner.rollout_buffer.clear()
             print("Representation learning 완료. 거리 맵이 생성되었습니다.")
@@ -866,7 +881,7 @@ class OffPolicyBaseRunner:
                 actions,  # (n_agents, n_threads, action_dim)
                 available_actions,  # None or (n_agents, n_threads, action_number)
                 rewards[:, 0],  # (n_threads, 1)
-                np.expand_dims(dones_env, axis=-1),  # (n_threads, 1)
+                np.expand_dims(dones_env, axis=-1),  # (n_threads, 1)   이게 dones다.
                 valid_transitions.transpose(1, 0, 2),  # (n_agents, n_threads, 1)
                 terms,  # (n_threads, 1)
                 next_share_obs[:, 0],  # (n_threads, next_share_obs_dim)
@@ -899,7 +914,10 @@ class OffPolicyBaseRunner:
         if self.tdd_args is not None:
             extracted_obs = obs[:, :, 2:4] # 에이전트 개인의 현재 절대 좌표만 뽑기 (n_agents, n_threads, 2)
             extracted_next_obs = next_obs[:, :, 2:4] # 에이전트 개인의 다음 절대 좌표만 뽑기 (n_threads, n_agents, 2)
-            self.tdd_runner.rollout_buffer.add_observation({"obs": extracted_obs, "next_obs": extracted_next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
+            if self.tdd_args["network"]["use_central_SD"]:
+                self.tdd_runner.rollout_buffer.add_observation({"share_obs": share_obs.transpose(1, 0, 2), "next_share_obs": next_share_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
+            else:
+                self.tdd_runner.rollout_buffer.add_observation({"obs": extracted_obs, "next_obs": extracted_next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
             if np.any(np.all(dones, axis=1)):
                 self.tdd_runner.rollout_buffer.end_rollout()
         """ TDD update 끝 """
@@ -1018,7 +1036,7 @@ class OffPolicyBaseRunner:
             )
             (
                 next_eval_obs,   # (n_threads, n_agents, obs_dim)
-                eval_share_obs,
+                next_eval_share_obs,
                 eval_rewards,
                 eval_dones, # (n_threads, n_agents)
                 eval_infos,
@@ -1027,8 +1045,13 @@ class OffPolicyBaseRunner:
             
             # intrinsic rewards 계산 (TDD가 있는 경우)
             if self.tdd_args is not None:
-                pos = eval_obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
-                new_pos = next_eval_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
+                if self.tdd_args["network"]["use_central_SD"]:
+                    pos = eval_share_obs  # obs: (n_threads, n_agents, obs_dim)
+                    new_pos = next_eval_share_obs  # new_obs: (n_threads, n_agents, obs_dim)
+                else:
+                    pos = eval_obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
+                    new_pos = next_eval_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
+                
                 int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), is_eval=True, temp_rollout_buffer=temp_rollout_buffer, n_rollout_threads=n_eval_rollout_threads)
                 
                 # intrinsic rewards 저장 (10 스텝마다만 저장)
@@ -1049,10 +1072,14 @@ class OffPolicyBaseRunner:
                     rollout_data[eval_i][agent_id].append([xy_coords[0], xy_coords[1], cur_step])
 
             for agent_id in range(self.num_agents):
-                temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                if self.tdd_args["network"]["use_central_SD"]:
+                    temp_rollout_buffer[agent_id].append({"share_obs": eval_share_obs.transpose(1, 0, 2)[agent_id], "next_share_obs": next_eval_share_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                else:
+                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
             
             one_episode_len += 1
             eval_obs = next_eval_obs
+            eval_share_obs = next_eval_share_obs
             
             # 첫 5 steps이랑 롤아웃 길이의 5등분 지점에서 distance map 생성
             if self.tdd_args is not None:
@@ -1064,17 +1091,20 @@ class OffPolicyBaseRunner:
                             self.eval_envs.remotes[eval_i].send(("get_landmarks_and_obstacles", None))
                             landmarks, obstacles = self.eval_envs.remotes[eval_i].recv()
                             
-                            for agent_id in range(self.num_agents):
-                                current_pos = eval_obs[eval_i, agent_id, 2:4]
-                                self.tdd_runner.plot_distance_map(
-                                current_pos,
-                                self.env_args["map_size"],
-                                agent_id,
-                                landmarks,
-                                obstacles,
-                                f"eval_thread_{eval_i}_agent_{agent_id}_step_{total_steps}",
-                                step=cur_step
-                            )
+                            if self.tdd_args["network"]["use_central_SD"]:
+                                pass
+                            else:
+                                for agent_id in range(self.num_agents):
+                                    current_pos = eval_obs[eval_i, agent_id, 2:4]
+                                    self.tdd_runner.plot_distance_map(
+                                    current_pos,
+                                    self.env_args["map_size"],
+                                    agent_id,
+                                    landmarks,
+                                    obstacles,
+                                    f"eval_thread_{eval_i}_agent_{agent_id}_step_{total_steps}",
+                                    step=cur_step
+                                )
 
             # 비디오/GIF 생성 (최적화)
             if one_episode_len[0] % 2 == 0:  # 2 스텝마다만 프레임 저장

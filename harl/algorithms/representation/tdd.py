@@ -108,8 +108,12 @@ class TDDModel:
         
         # 네트워크
         self.input_dim = input_dim
-        self.latents_dim = self.args["network"]["latents_dim"]
-        self.output_dim = self.args["network"]["output_dim"]
+        if self.args["network"]["use_central_SD"]:
+            self.latents_dim = self.args["network"]["latents_dim"] * num_agents
+            self.output_dim = self.args["network"]["output_dim"] * num_agents
+        else:
+            self.latents_dim = self.args["network"]["latents_dim"]
+            self.output_dim = self.args["network"]["output_dim"]
         self.device = device
         
         # 기본 TDD 설정
@@ -125,7 +129,8 @@ class TDDModel:
         
         self.tdd_discount = self.args["tdd"]["tdd_discount"]
         
-        if self.args["network"]["use_independent_nets"]:
+        if self.args["network"]["use_independent_nets"] and not self.args["network"]["use_central_SD"]:
+            print("use_independent_nets and not use_central_SD")
             self.potential_net = [PotentialNet(self.input_dim, self.latents_dim).to(device) for _ in range(num_agents)]
             self.s_encoder = [S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device) for _ in range(num_agents)]
             self.optimizer = []
@@ -135,7 +140,8 @@ class TDDModel:
                     {"params": self.s_encoder[agent_id].parameters(), "lr": self.learning_rate}
                 ])
                 self.optimizer.append(optimizer)
-        else:
+        elif not self.args["network"]["use_independent_nets"] or self.args["network"]["use_central_SD"]:
+            print("not use_independent_nets or use_central_SD")
             self.potential_net = PotentialNet(self.input_dim, self.latents_dim).to(device)
             self.s_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
             self.optimizer = torch.optim.Adam(
@@ -144,6 +150,8 @@ class TDDModel:
                     {"params": self.s_encoder.parameters(), "lr": self.learning_rate}
                 ]
             )
+        else:
+            raise ValueError(f"Invalid TDD configuration: use_independent_nets: {self.args['network']['use_independent_nets']} and use_central_SD: {self.args['network']['use_central_SD']}")
         
         # Tensorboard 설정
         if run_dir is not None:
@@ -171,11 +179,17 @@ class TDDModel:
         
         """ 모든 에이전트에 대한 데이터 후처리 """
         for agent_id in range(len(data)):
-            obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2)
-            # data[0][0][0]['obs'].shape가 (1,1,2)로 나오긴 했는데 음
-            obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
-            next_obss[agent_id] = np.array([[step['next_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
-            next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
+            if not self.args["network"]["use_central_SD"]:
+                obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2)
+                # data[0][0][0]['obs'].shape가 (1,1,2)로 나오긴 했는데 음
+                obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
+                next_obss[agent_id] = np.array([[step['next_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
+                next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
+            else:
+                obss[agent_id] = np.array([[step['share_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2)
+                obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
+                next_obss[agent_id] = np.array([[step['next_share_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
+                next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
             n_trajs[agent_id], n_cum_steps[agent_id], n_threads[agent_id] = obss[agent_id].shape[:3]
         
         # 설마 에이전트별 데이터 수가 다른 경우에 대한 예외처리
@@ -191,6 +205,9 @@ class TDDModel:
             total_loss = 0.0
             
             for agent_id in range(len(data)) if not self.args["train"]["use_reverse_update"] else range(len(data) - 1, -1, -1):
+                if self.args["train"]["use_one_buffer"]:
+                    if agent_id != 1:
+                        continue
                 thread_metrics_list = []
                 """ 각 스레드별로 traj_idx, step_idx를 랜덤하게 선택하고, 그 인덱스에 대한 obs와 goal을 추출한다. """
                 for thread_idx in range(n_threads[0]):
@@ -271,6 +288,9 @@ class TDDModel:
             if i % (self.warmup_logging_interval // n_threads[0] if is_warm_up else self.learning_logging_interval // n_threads[0]) == 0:
                 print(f"Step {i} - Average Loss: {total_loss / (len(data) * n_threads[0])}")
                 # 전체 에이전트의 평균 메트릭 계산
+                if self.args["train"]["use_one_buffer"]:
+                    if agent_id != 1:
+                        continue
                 avg_metrics = {
                     'avg/contrastive_loss': np.mean([metrics[f'agent_{j}/loss/contrastive_loss'] for j in range(len(data))]),
                     'avg/s_encoder_grad_norm': np.mean([metrics[f'agent_{j}/gradients/s_encoder_norm'] for j in range(len(data))]),

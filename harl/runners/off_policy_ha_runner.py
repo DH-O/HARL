@@ -42,14 +42,13 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     else None,
                 )
                 next_actions.append(next_action)
-                # if self.tdd_runner is not None:
-                #     # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
-                #     # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.
-                #     # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
-                #     # next_entropy_terms.append(self.tdd_runner.calculate_state_entropy(sp_next_obs[agent_id]))
-                #     next_entropy_terms.append(next_logp_action)
-                # else:
-                next_entropy_terms.append(next_logp_action)
+                if self.tdd_runner is not None and self.tdd_args["train"]["use_state_entropy"]:
+                    # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
+                    # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.
+                    # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
+                    next_entropy_terms.append(-self.tdd_runner.calculate_state_entropy(sp_next_obs[agent_id], agent_id))
+                else:
+                    next_entropy_terms.append(next_logp_action)
             critic_loss = self.critic.train(
                 sp_share_obs,
                 sp_actions,
@@ -101,7 +100,8 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 # actions shape: (n_agents, batch_size, dim)
                 # logp_actions shape: (n_agents, batch_size, 1)
                 if self.fixed_order:
-                    agent_order = list(range(self.num_agents))
+                    # agent_order = list(range(self.num_agents))
+                    agent_order = list(range(self.num_agents - 1, -1, -1))
                 else:
                     agent_order = list(np.random.permutation(self.num_agents))
                 actor_loss_ls = [0 for _ in range(self.num_agents)]
@@ -131,8 +131,8 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         if self.state_type == "EP":
                             actor_loss = (
                                 -torch.sum(
-                                    (value_pred - self.alpha[agent_id] * logp_action)
-                                    * sp_valid_transition[agent_id]
+                                    (value_pred - self.alpha[agent_id] * logp_action)   # 왼쪽 self.alpha가 off_policy_base_runner.py에서 선언
+                                    * sp_valid_transition[agent_id] # lopg_action은 aget_wise로 액터 엔트로피
                                 )
                                 / sp_valid_transition[agent_id].sum()   # batch_size만큼의 valid_transition이 있으므로, agent_id가 모든 경우에서 이를 모두 더해주면 batch_size가 된다.
                             )

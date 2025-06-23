@@ -35,7 +35,7 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             self.alpha_optimizer = torch.optim.Adam(
                 [self.log_alpha], lr=args["alpha_lr"]
             )
-            self.alpha = torch.exp(self.log_alpha.detach())
+            self.alpha = torch.exp(self.log_alpha.detach()) # 결국 알파의 초기값은 1이다.
         else:
             self.alpha = args["alpha"]
         self.use_policy_active_masks = args["use_policy_active_masks"]

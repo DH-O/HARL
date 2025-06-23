@@ -65,7 +65,10 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         self.num_agents = num_agents
         self.observation_space = observation_space
         
-        self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2, self.device, run_dir=log_dir)
+        if self.tdd_args["network"]["use_central_SD"]:
+            self.tdd_model = TDDModel(self.tdd_args, self.num_agents, self.num_agents * (2 + 2 + 2 * self.num_agents + 4 * (self.num_agents - 1)), self.device, run_dir=log_dir)
+        else:
+            self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2, self.device, run_dir=log_dir)
         
         # 보상 계산 관련 변수 초기화
         self.reward_update_counter = 0
@@ -133,12 +136,22 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         prev_states = []
         for i, state_dict in enumerate(current_rollout_states[agent_id]):
             if i == len(current_rollout_states[agent_id]) - 1:
-                prev_states.append(state_dict['obs'])
+                if self.tdd_args["network"]["use_central_SD"]:
+                    prev_states.append(state_dict['share_obs'])
+                else:
+                    prev_states.append(state_dict['obs'])
                 prev_states.append(pos[agent_id])
-                if not np.allclose(pos[agent_id], state_dict['next_obs'], rtol=1e-5, atol=1e-5):
-                    raise AssertionError(f"rollout_states의 마지막 상태의 next_obs({state_dict['next_obs']})가 현재 상태({pos[agent_id]})와 다른 경우입니다.")
+                if self.tdd_args["network"]["use_central_SD"]:
+                    if not np.allclose(pos[agent_id], state_dict['next_share_obs'], rtol=1e-5, atol=1e-5):
+                        raise AssertionError(f"rollout_states의 마지막 상태의 next_share_obs({state_dict['next_share_obs']})가 현재 상태({pos[agent_id]})와 다른 경우입니다.")
+                else:
+                    if not np.allclose(pos[agent_id], state_dict['next_obs'], rtol=1e-5, atol=1e-5):
+                        raise AssertionError(f"rollout_states의 마지막 상태의 next_obs({state_dict['next_obs']})가 현재 상태({pos[agent_id]})와 다른 경우입니다.")
             else:
-                prev_states.append(state_dict['obs'])
+                if self.tdd_args["network"]["use_central_SD"]:
+                    prev_states.append(state_dict['share_obs'])
+                else:
+                    prev_states.append(state_dict['obs'])
         return prev_states
 
     def compute_intrinsic_reward(self, pos, new_pos, is_eval=False, temp_rollout_buffer=None, n_rollout_threads=None):
@@ -146,7 +159,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         if temp_rollout_buffer is None:
             current_rollout_states = self.rollout_buffer.current_rollout_states[:]
         else:
-            current_rollout_states = temp_rollout_buffer    # (n_agents, {'obs': (2,), 'next_obs': (2,), 'dones': (1,)}) 여야함
+            current_rollout_states = temp_rollout_buffer    # (n_agents, {'obs': (2,), 'share_obs': (54,), 'next_obs': (2,), 'next_share_obs': (54,), 'dones': (1,)}) 여야함 (에이전트 수 3개 기준)
         
         with torch.no_grad():
             for agent_id in range(self.num_agents):
@@ -185,9 +198,9 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         new_pos_abs = new_pos[:, 2:4]
         new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
         if self.tdd_args["network"]["use_independent_nets"]:
-            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (n_rollout_threads, hidden_dim)
+            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
         else:
-            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (n_rollout_threads, hidden_dim)
+            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
         
         # 가장 최근 3000 스텝만 가져오기
         n_agents = len(rollout_buffer_all)
@@ -203,7 +216,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         rollout_array = rollout_array[:, -batch_size // n_agents:, -batch_size // n_agents:]
         flattened = rollout_array.reshape(-1)   # 위 작업 진행 안 했다면 0~799번째까지 연속된 궤적이고 800번째부터 다시 초기화된다. 그렇게 3200이 rollout_array의 [0][5][0]이 됩니다만... 그렇다는건 flattened[3200]까진 전부 0번째 에이전트의 궤적이란 말이다;;
         
-        all_obs_temp = np.array([buffer['obs'] for buffer in flattened])
+        all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
         all_obs_temp = all_obs_temp.reshape(-1, 2)
         all_obs = all_obs_temp[start_idx:]
         
@@ -226,7 +239,10 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         neighbor_distances = torch.gather(dists, dim=0, index=nearest_neighbors)  # (10, batch_size)가 될 것이다.
         neighbor_distances = neighbor_distances.T   # (batch_size, 10)이 될 것이다.
-        entropy_term = torch.log(1 + (1/10) * torch.sum(neighbor_distances ** batch_size, dim=1))  # 각 phi_y에 대해 10개의 가장 가까운 phi_x와의 거리를 모두 더한 후 10으로 나누고 1을 더한 후 로그를 취한다.
+        normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
+        sum_distances = torch.sum(normalized_distances, dim=1)  # (batch_size, )
+        sum_distances = torch.clamp(sum_distances, max=1e6)
+        entropy_term = torch.log(1 + (1/10) * sum_distances)  # 각 phi_y에 대해 10개의 가장 가까운 phi_x와의 거리를 모두 더한 후 10으로 나누고 1을 더한 후 로그를 취한다.
         # 그나저나 초기에는 entropy_term이 0이 뜨는데 괜찮으려나
         return entropy_term
         

@@ -8,13 +8,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 
+from harl.utils.envs_tools import make_train_env
+from harl.models.policy_models.squashed_gaussian_policy import SquashedGaussianPolicy
+
 """ 하이퍼파라미터 설정 """
 n_trajs = 3000
 n_agents = 3
 agent_size = 0.04
 bounds = 2 * agent_size
 map_size = 1.0
-epi_len = 900
+epi_len = 400
 steps_per_seg = epi_len // 5
 learn_steps = 5000
 batch_ = 1024
@@ -23,10 +26,20 @@ lat_dim = 128
 output_emb_dim = 64
 lr = 1e-3
 use_sep_net = True
-use_sep_g_encod = False
+
 
 metric_logging_interval = 500
 base_dir = f"runs/SD_n_trajs_{n_trajs}_learn_steps_{learn_steps}_batch_size_{batch_}_lat_dim_{lat_dim}_output_emb_dim_{output_emb_dim}_lr_{lr}_use_sep_net_{use_sep_net}/{time.strftime('%m-%d_%H-%M-%S')}"
+
+""" RL 설정 """
+use_RL = True
+n_rollout_threads = 2
+total_RL_steps = 500000 # 500000 * 20 = 10000000
+actor_args = {
+    "hidden_sizes": [256, 256],
+    "activation_func": "relu",
+    "final_activation_func": "tanh"
+}
 
 """ 텐서보드 설정 """
 from torch.utils.tensorboard import SummaryWriter
@@ -43,13 +56,8 @@ else:
 if use_sep_net:
     potential_net = [nn.Sequential(
         nn.Linear(2, lat_dim),
-        nn.LayerNorm(lat_dim),
         nn.ReLU(),
         nn.Linear(lat_dim, lat_dim),
-        nn.LayerNorm(lat_dim),
-        nn.ReLU(),
-        nn.Linear(lat_dim, lat_dim),
-        nn.LayerNorm(lat_dim),
         nn.ReLU(),
         nn.Linear(lat_dim, 1)
     ).to(device) for _ in range(n_agents)]
@@ -79,39 +87,17 @@ else:
         nn.Linear(lat_dim, output_emb_dim)
     ).to(device)
 
-if use_sep_g_encod:
-    g_encoder = nn.Sequential(
-        nn.Linear(2, lat_dim),
-        nn.LayerNorm(lat_dim),
-        nn.ReLU(),
-        nn.Linear(lat_dim, output_emb_dim)
-    ).to(device)
+""" 파라미터 설정 """
+if use_sep_net:
+    optimizer = [torch.optim.Adam([
+        {"params": potential_net[agent_id].parameters(), "lr": lr},
+        {"params": s_encoder[agent_id].parameters(), "lr": lr}
+    ]) for agent_id in range(n_agents)]
 else:
-    g_encoder = None
-
-if g_encoder:
-    params = [
+    optimizer = torch.optim.Adam([
         {"params": potential_net.parameters(), "lr": lr},
-        {"params": s_encoder.parameters(), "lr": lr},
-        {"params": g_encoder.parameters(), "lr": lr}
-    ]
-else:
-    if use_sep_net:
-        params = [
-            {"params": potential_net[agent_id].parameters(), "lr": lr}
-            for agent_id in range(n_agents)
-        ]
-        params += [
-            {"params": s_encoder[agent_id].parameters(), "lr": lr}
-            for agent_id in range(n_agents)
-        ]
-    else:
-        params = [
-            {"params": potential_net.parameters(), "lr": lr},
-            {"params": s_encoder.parameters(), "lr": lr}
-        ]
-
-optimizer = torch.optim.Adam(params)
+        {"params": s_encoder.parameters(), "lr": lr}
+    ])
 
 """ center를 기준으로 bounds 범위 내에서 랜덤하게 좌표를 생성하는 함수 """
 def get_const_pos(pos_list, center, bounds):
@@ -588,3 +574,93 @@ for j in range(5):
 
 print("Eval 완료 시각: ", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())))
 print("base_dir: ", base_dir)
+
+def _t2n(value):
+    """Convert torch.Tensor to numpy.ndarray."""
+    return value.detach().cpu().numpy()
+
+@torch.no_grad()
+def get_actions(self, obs, available_actions=None, add_random=True):
+    """Get actions for rollout.
+    Args:
+        obs: (np.ndarray) input observation, shape is (n_threads, n_agents, dim)
+        available_actions: (np.ndarray) denotes which actions are available to agent (if None, all actions available),
+                                shape is (n_threads, n_agents, action_number) or (n_threads, ) of None
+        add_random: (bool) whether to add randomness
+    Returns:
+        actions: (np.ndarray) agent actions, shape is (n_threads, n_agents, dim)
+    """
+    actions = []
+    for agent_id in range(n_agents):
+        # (n_threads, n_agents, action_number)
+        actions.append(
+            _t2n(
+                actor[agent_id].get_actions(
+                    obs[:, agent_id],
+                    available_actions[:, agent_id],
+                    add_random,
+                )
+            )
+        )
+
+envs = make_train_env(
+                "pettingzoo_mpe",
+                38,
+                n_rollout_threads,
+                {
+                    "scenario": "simple_spread_v2",
+                    "continuous_actions": True,
+                    "map_size": map_size,
+                    "N": n_agents,
+                    "max_cycles": epi_len,
+                }
+)
+
+actor = [SquashedGaussianPolicy(actor_args, 
+                                envs.observation_space[agent_id], 
+                                envs.action_space[agent_id], 
+                                device) for _ in range(n_agents)]
+
+rollout_data_for_metric = {env_id: {agent_id: [] for agent_id in range(n_agents)} for env_id in range(n_rollout_threads)}
+current_rollout_states = [[] for _ in range(n_agents)]
+rollout_history = [[] for _ in range(n_agents)]
+rollout_history_count = 0
+
+def _get_prev_states(current_rollout_states, agent_id, pos):
+    prev_states = []
+    for i, state_dict in enumerate(current_rollout_states[agent_id]):
+        if i == len(current_rollout_states[agent_id]) - 1:
+            prev_states.append(state_dict['obs'])
+            prev_states.append(pos[agent_id])
+        else:
+            prev_states.append(state_dict['obs'])
+
+def compute_intrinsic_reward(pos, new_pos, n_rollout_threads):
+    with torch.no_grad():
+        for agent_id in range(n_agents):
+            if any(current_rollout_states):
+                prev_states = tdd_runner._get_prev_states(current_rollout_states, agent_id, pos, is_eval)
+                min_dists = tdd_runner._compute_mrn_distance(new_pos[agent_id], prev_states, agent_id, n_rollout_threads)
+                int_rew[agent_id].append(min_dists.cpu().numpy())
+    return int_rew
+
+obs, share_obs, available_actions = envs.reset()
+for step in range(total_RL_steps):
+    actions = get_actions(obs, available_actions, add_random=True)
+    new_obs, new_share_obs, rewards, dones, infos, new_available_actions = envs.step(actions)
+    next_obs = new_obs.copy()
+    
+    """ exploration metric """
+    for env_id in range(n_rollout_threads):
+        for agent_id in range(n_agents):
+            xy_coords = new_obs[env_id, agent_id, [2, 3]]
+            rollout_data_for_metric[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
+    
+    pos = obs[:, :, 2:4]
+    new_pos = next_obs[:, :, 2:4]
+    if dones.any():
+        int_rew = tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), pos.transpose(1, 0, 2), n_rollout_threads=n_rollout_threads)
+    else:
+        int_rew = tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), n_rollout_threads=n_rollout_threads)
+
+envs.close()
