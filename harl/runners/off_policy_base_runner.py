@@ -6,6 +6,8 @@ import torch
 import imageio
 import numpy as np
 import setproctitle
+import logging
+logger = logging.getLogger(__name__)
 """ exploration metric """
 import matplotlib.pyplot as plt
 import matplotlib
@@ -196,7 +198,9 @@ class OffPolicyBaseRunner:
         """ TDD 관련 """
         self.tdd_args = tdd_args
         if self.tdd_args is not None and not self.algo_args["render"]["use_render"]:
-            self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, self.log_dir)
+            # TDD 로깅 설정 - save_dir 안에 로그 파일 생성
+            self._setup_tdd_logging()
+            self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, self.save_dir)
         """ TDD 관련 끝 """
         
         if self.share_param:
@@ -281,20 +285,23 @@ class OffPolicyBaseRunner:
                     self.envs.action_space[agent_id].__class__.__name__ == "Box"
                 ):  # Differential entropy can be negative
                     if self.tdd_args is not None and self.tdd_args["train"]["use_state_entropy"] and not self.tdd_args["train"]["use_actor_entropy"]:
-                        print("use_state_entropy and not use_actor_entropy")
                         self.target_entropy.append(
                             -np.prod(2 * (self.num_agents - 1))    # successor distance에 관여하는 차원이 2차원이다. 본인 제외한 모든 에이전트 사이와의 거리 갯수만큼 차원의 기준으로 정해봤다.
                         )
+                        print(f"use_state_entropy and not use_actor_entropy, therefore target_entropy is {self.target_entropy[-1]}")
                     elif self.tdd_args is not None and self.tdd_args["train"]["use_actor_entropy"] and self.tdd_args["train"]["use_state_entropy"]:
-                        print("use_actor_entropy for decentralized and use_state_entropy for centralized")
                         self.target_entropy.append(
                             -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
                         )
+                        print(f"use_actor_entropy for decentralized and use_state_entropy for centralized, therefore target_entropy is {self.target_entropy[-1]}")
                     else:
-                        print(f"tdd_args: {self.tdd_args}, use_state_entropy: {self.tdd_args['train']['use_state_entropy']}, use_actor_entropy: {self.tdd_args['train']['use_actor_entropy']}")
                         self.target_entropy.append(
                             -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
                         )
+                        if self.tdd_args is not None:
+                            print(f"use_state_entropy: {self.tdd_args['train']['use_state_entropy']}, use_actor_entropy: {self.tdd_args['train']['use_actor_entropy']}, therefore target_entropy is {self.target_entropy[-1]}")
+                        else:
+                            print("tdd_args is None")
                 else:  # Discrete entropy is always positive. Thus we set the max possible entropy as the target entropy
                     self.target_entropy.append(
                         -0.98
@@ -315,6 +322,43 @@ class OffPolicyBaseRunner:
         elif "alpha" in self.algo_args["algo"].keys():
             self.alpha = [self.algo_args["algo"]["alpha"]] * self.num_agents
         
+        
+    def _setup_tdd_logging(self):
+        """TDD 관련 로깅 설정을 초기화합니다."""
+        # 이미 설정되었는지 확인
+        tdd_logger = logging.getLogger('harl.runners.tdd_runner')
+        base_logger = logging.getLogger('harl.runners.off_policy_base_runner')
+        
+        # 이미 핸들러가 있으면 추가 설정하지 않음
+        if tdd_logger.handlers or base_logger.handlers:
+            return
+        
+        # 기본 포맷터 설정
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        
+        # TDD 관련 로거 설정
+        tdd_logger.setLevel(logging.INFO)
+        
+        # TDD 파일 핸들러 (save_dir 안에 생성)
+        tdd_file_handler = logging.FileHandler(os.path.join(self.save_dir, 'tdd_runner.log'))
+        tdd_file_handler.setFormatter(formatter)
+        tdd_logger.addHandler(tdd_file_handler)
+        tdd_logger.propagate = False  # 상위 로거로 전파하지 않음
+        
+        # Base runner 로거 설정
+        base_logger.setLevel(logging.INFO)
+        
+        # Base runner 파일 핸들러 (save_dir 안에 생성)
+        base_file_handler = logging.FileHandler(os.path.join(self.save_dir, 'tdd_base_runner.log'))
+        base_file_handler.setFormatter(formatter)
+        base_logger.addHandler(base_file_handler)
+        base_logger.propagate = False  # 상위 로거로 전파하지 않음
+        
+        # Root 로거는 터미널 출력만 방지 (한 번만 설정)
+        root_logger = logging.getLogger()
+        if not root_logger.handlers:
+            root_logger.setLevel(logging.WARNING)  # WARNING 이상만 처리
+            root_logger.addHandler(logging.NullHandler())
         
     def run(self):
         print(self.run_dir)
@@ -497,8 +541,40 @@ class OffPolicyBaseRunner:
                         self.tdd_runner.rollout_buffer.clear()
                 
                 if step % self.algo_args["train"]["train_interval"] == 0:
+                    # TDD가 활성화된 경우 롤아웃 버퍼 충분성 체크
+                    if self.tdd_args is not None:
+                        # 롤아웃 버퍼가 충분한지 확인
+                        buffer_sufficient = True
+                        
+                        # tdd.yaml 설정값에 따라 동적으로 최소 요구사항 설정
+                        min_trajectories = max(2, self.tdd_args["train"]["batch_size"] // 1000)  # batch_size에 따라 조정
+                        min_steps_per_traj = max(10, self.tdd_args["train"]["max_historical_samples"] // 200)  # max_historical_samples에 따라 조정
+                        
+                        if len(self.tdd_runner.rollout_buffer.rollout_history) == 0:
+                            buffer_sufficient = False
+                        else:
+                            for agent_id in range(self.num_agents):
+                                agent_history = self.tdd_runner.rollout_buffer.rollout_history[agent_id]
+                                if len(agent_history) < min_trajectories:
+                                    buffer_sufficient = False
+                                    break
+                                
+                                # 각 궤적에 충분한 스텝이 있는지 확인
+                                for traj in agent_history:
+                                    if len(traj) < min_steps_per_traj:
+                                        buffer_sufficient = False
+                                        break
+                        
+                        if not buffer_sufficient and step % 1000 == 0:
+                            if self.tdd_args is not None:
+                                logger.warning(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
+                                logger.warning(f"rollout_history_count: {rollout_history_count}, 현재 롤아웃 버퍼 상태: {self.tdd_runner.rollout_buffer.rollout_history}, 현재 step: {step}")
+                            else:
+                                print(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
+                            continue
+                    
                     for _ in range(update_num): # update_num은 50이다.
-                        critic_loss, actor_loss_ls, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
+                        critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
                         self.writter.add_scalar("critic_loss", critic_loss, step)
                         self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
                         self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
@@ -774,19 +850,24 @@ class OffPolicyBaseRunner:
             obs, _, _ = self.envs.reset()
             # 에이전트의 위치만 추출 (x, y 좌표)
             agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
-            # 각 환경과 에이전트별로 거리 맵 생성
+            # 각 환경과 에이전트별로 거리 맵 생성 (최적화: 샘플링으로 줄임)
             if self.tdd_args["network"]["use_central_SD"]:
                 pass
             else:
-                for i in range(5):
-                    for thread_id in range(min(self.n_rollout_threads, 5)):
-                        for agent_id in range(self.num_agents):
+                # 샘플링: 전체 환경과 에이전트 중 일부만 선택
+                sample_threads = min(2, self.n_rollout_threads)  # 최대 2개 환경만
+                sample_agents = self.num_agents  # 모든 에이전트 유지
+                sample_positions = 3  # 위치 변화도 3개만
+                
+                for i in range(sample_positions):
+                    for thread_id in range(sample_threads):
+                        for agent_id in range(sample_agents):
                             # 랜드마크와 장애물 정보 가져오기
                             self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
                             landmarks, obstacles = self.envs.remotes[thread_id].recv()
                             
                             # 현재 에이전트의 위치를 목표로 설정
-                            start_pos = agent_positions[thread_id, agent_id]
+                            start_pos = agent_positions[thread_id, agent_id].copy()
                             start_pos[0] = np.clip(start_pos[0] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                             start_pos[1] = np.clip(start_pos[1] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                             # 거리 맵 생성
@@ -796,7 +877,7 @@ class OffPolicyBaseRunner:
                                 agent_id,
                                 landmarks, 
                                 obstacles, 
-                                f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]}_{start_pos[1]}",
+                                f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]:.2f}_{start_pos[1]:.2f}",
                                 step=0
                             )
             
@@ -991,7 +1072,7 @@ class OffPolicyBaseRunner:
                 )
         return np.array(actions).transpose(1, 0, 2)
 
-    def train(self):
+    def train(self, step=None):
         """Train the model"""
         raise NotImplementedError
 
@@ -1213,7 +1294,11 @@ class OffPolicyBaseRunner:
                     )
                 else:
                     print(
-                        f"Eval average episode reward is {eval_avg_rew}, eval average episode length is {eval_avg_len}.\n"
+                        f"Eval average episode reward is {eval_avg_rew}, eval average episode length is {eval_avg_len}."
+                    )
+                    cur_time = time.strftime("%m-%d %H:%M:%S", time.localtime(time.time()))
+                    print(
+                        f"The time is {cur_time}.\n"
                     )
                 if "smac" in self.args["env"]:
                     self.log_file.write(

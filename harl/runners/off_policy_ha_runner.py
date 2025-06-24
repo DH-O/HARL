@@ -9,7 +9,7 @@ from harl.runners.tdd_runner import TddRunner
 class OffPolicyHARunner(OffPolicyBaseRunner):
     """Runner for off-policy HA algorithms."""
 
-    def train(self):
+    def train(self, step=None):
         """ Train the model """ # batch가 주로 1000이다
         self.total_it += 1  # train 할때마다 하나씩 증가
         data = self.buffer.sample()
@@ -31,7 +31,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
         self.critic.turn_on_grad()  # 부모 클래스의 마지막(twin_continuous_q_critic.py)에 있는 메소드. grad를 하나하나 켜준다.   
         if self.args["algo"] == "hasac":
             next_actions = []
-            next_entropy_terms = []
+            next_entropy_terms_critics = []
             for agent_id in range(self.num_agents):
                 next_action, next_logp_action = self.actor[
                     agent_id
@@ -46,9 +46,9 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
                     # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.
                     # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
-                    next_entropy_terms.append(-self.tdd_runner.calculate_state_entropy(sp_next_obs[agent_id], agent_id))
+                    next_entropy_terms_critics.append(-self.tdd_runner.calculate_central_state_entropy(sp_next_obs[agent_id], agent_id, step).unsqueeze(-1))
                 else:
-                    next_entropy_terms.append(next_logp_action)
+                    next_entropy_terms_critics.append(next_logp_action)
             critic_loss = self.critic.train(
                 sp_share_obs,
                 sp_actions,
@@ -58,7 +58,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 sp_term,
                 sp_next_share_obs,
                 next_actions,
-                next_entropy_terms,
+                next_entropy_terms_critics,
                 sp_gamma,
                 self.value_normalizer,
             )
@@ -84,21 +84,30 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
             # train actors
             if self.args["algo"] == "hasac":
                 actions = []
-                logp_actions = []
+                entropy_terms_ls_actors = []
                 with torch.no_grad():
                     for agent_id in range(self.num_agents):
-                        action, logp_action = self.actor[
-                            agent_id
-                        ].get_actions_with_logprobs(
-                            sp_obs[agent_id],
-                            sp_available_actions[agent_id]
-                            if sp_available_actions is not None
-                            else None,
-                        )
+                        if self.tdd_runner is None or self.tdd_args["train"]["use_actor_entropy"]:
+                            action, entropy_term = self.actor[agent_id].get_actions_with_logprobs(
+                                sp_obs[agent_id],
+                                sp_available_actions[agent_id]
+                                if sp_available_actions is not None
+                                else None,
+                            )
+                        else:
+                            if not self.tdd_args["train"]["use_state_entropy"]:
+                                raise ValueError("use_state_entropy must be True when use_actor_entropy is False")
+                            action = self.actor[agent_id].get_actions(
+                                sp_obs[agent_id],
+                                sp_available_actions[agent_id]
+                                if sp_available_actions is not None
+                                else None,
+                            )
+                            entropy_term = -self.tdd_runner.calculate_decentral_state_entropy(sp_obs[agent_id], agent_id, step).unsqueeze(-1)
                         actions.append(action)
-                        logp_actions.append(logp_action)
+                        entropy_terms_ls_actors.append(entropy_term)
                 # actions shape: (n_agents, batch_size, dim)
-                # logp_actions shape: (n_agents, batch_size, 1)
+                # entropy_terms_ls shape: (n_agents, batch_size, 1)
                 if self.fixed_order:
                     # agent_order = list(range(self.num_agents))
                     agent_order = list(range(self.num_agents - 1, -1, -1))
@@ -108,20 +117,32 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 for agent_id in agent_order:
                     self.actor[agent_id].turn_on_grad()
                     # train this agent
-                    actions[agent_id], logp_actions[agent_id] = self.actor[
-                        agent_id
-                    ].get_actions_with_logprobs(
-                        sp_obs[agent_id],
-                        sp_available_actions[agent_id]
-                        if sp_available_actions is not None
-                        else None,
-                    )
+                    if self.tdd_runner is None or self.tdd_args["train"]["use_actor_entropy"]:
+                        actions[agent_id], entropy_terms_ls_actors[agent_id] = self.actor[
+                            agent_id
+                        ].get_actions_with_logprobs(
+                            sp_obs[agent_id],
+                            sp_available_actions[agent_id]
+                            if sp_available_actions is not None
+                            else None,
+                        )
+                    else:
+                        if not self.tdd_args["train"]["use_state_entropy"]:
+                            raise ValueError("use_state_entropy must be True when use_actor_entropy is False")
+                        actions[agent_id] = self.actor[agent_id].get_actions(
+                            sp_obs[agent_id],
+                            sp_available_actions[agent_id]
+                            if sp_available_actions is not None
+                            else None,
+                        )
+                        entropy_terms_ls_actors[agent_id] = self.tdd_runner.calculate_decentral_state_entropy(sp_obs[agent_id], agent_id, step).unsqueeze(-1)
+                        
                     if self.state_type == "EP":
-                        logp_action = logp_actions[agent_id]
+                        entropy_term_agent_wise = entropy_terms_ls_actors[agent_id]
                         actions_t = torch.cat(actions, dim=-1)
                     elif self.state_type == "FP":
-                        logp_action = torch.tile(
-                            logp_actions[agent_id], (self.num_agents, 1)
+                        entropy_term_agent_wise = torch.tile(
+                            entropy_terms_ls_actors[agent_id], (self.num_agents, 1)
                         )
                         actions_t = torch.tile(
                             torch.cat(actions, dim=-1), (self.num_agents, 1)
@@ -131,7 +152,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         if self.state_type == "EP":
                             actor_loss = (
                                 -torch.sum(
-                                    (value_pred - self.alpha[agent_id] * logp_action)   # 왼쪽 self.alpha가 off_policy_base_runner.py에서 선언
+                                    (value_pred - self.alpha[agent_id] * entropy_term_agent_wise)   # 왼쪽 self.alpha가 off_policy_base_runner.py에서 선언
                                     * sp_valid_transition[agent_id] # lopg_action은 aget_wise로 액터 엔트로피
                                 )
                                 / sp_valid_transition[agent_id].sum()   # batch_size만큼의 valid_transition이 있으므로, agent_id가 모든 경우에서 이를 모두 더해주면 batch_size가 된다.
@@ -142,14 +163,14 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                             )
                             actor_loss = (
                                 -torch.sum(
-                                    (value_pred - self.alpha[agent_id] * logp_action)
+                                    (value_pred - self.alpha[agent_id] * entropy_term_agent_wise)
                                     * valid_transition
                                 )
                                 / valid_transition.sum()
                             )
                     else:
                         actor_loss = -torch.mean(
-                            value_pred - self.alpha[agent_id] * logp_action
+                            value_pred - self.alpha[agent_id] * entropy_term_agent_wise
                         )
                     self.actor[agent_id].actor_optimizer.zero_grad()
                     actor_loss.backward()
@@ -159,7 +180,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     # train this agent's alpha
                     if self.algo_args["algo"]["auto_alpha"]:    # 이거 True
                         log_prob = (
-                            logp_actions[agent_id].detach() # 확률밀도 함수의 로그값
+                            entropy_terms_ls_actors[agent_id].detach() # 확률밀도 함수의 로그값
                             + self.target_entropy[agent_id]
                         )
                         alpha_loss = -(self.log_alpha[agent_id] * log_prob).mean()
@@ -179,7 +200,10 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     )
                 # train critic's alpha
                 if self.algo_args["algo"]["auto_alpha"]:
-                    self.critic.update_alpha(logp_actions, np.sum(self.target_entropy)) # 이건 agnet_wise로 하면 안 되니까 np.sum()하는거다.
+                    if self.tdd_runner is not None and self.tdd_args["train"]["use_state_entropy"] and not self.tdd_args["train"]["use_actor_entropy"]:
+                        self.critic.update_alpha(next_entropy_terms_critics, np.sum(self.target_entropy)) # 이건 agnet_wise로 하면 안 되니까 np.sum()하는거다.
+                    else:
+                        self.critic.update_alpha(entropy_terms_ls_actors, np.sum(self.target_entropy)) # 이건 agnet_wise로 하면 안 되니까 np.sum()하는거다.
             else:
                 if self.args["algo"] == "had3qn":
                     actions = []

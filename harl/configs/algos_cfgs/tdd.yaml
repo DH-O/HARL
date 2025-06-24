@@ -9,7 +9,7 @@ network:
   # activation function
   activation_function: relu
   # use independent nets
-  use_independent_nets: False
+  use_independent_nets: True
   # use central SD
   use_central_SD: False
 
@@ -54,8 +54,14 @@ train:
   # use suppression reward
   use_suppression_reward: False
   # use state entropy
-  use_state_entropy: False
+  use_state_entropy: True
   # use actor entropy
-  use_actor_entropy: False
+  use_actor_entropy: True
+  # max historical samples
+  max_historical_samples: 4000
+  # max batch size
+  max_batch_size: 1024
+  # default k value
+  default_k_value: 11
   # tdd with mean state
   tdd_with_mean_state: False
