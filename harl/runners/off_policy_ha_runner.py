@@ -48,6 +48,16 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
                     next_entropy_terms_critics.append(-self.tdd_runner.calculate_central_state_entropy(sp_next_obs[agent_id], agent_id, step).unsqueeze(-1))
                 else:
+                    if self.print_flag:
+                        if self.tdd_runner is not None:
+                            print(
+                                f"TDD is used for agent {agent_id}."
+                            )
+                        else:
+                            print(
+                                f"TDD is not used for agent {agent_id}."
+                            )
+                        self.print_flag = False
                     next_entropy_terms_critics.append(next_logp_action)
             critic_loss = self.critic.train(
                 sp_share_obs,

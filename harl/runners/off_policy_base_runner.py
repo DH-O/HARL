@@ -123,6 +123,8 @@ class OffPolicyBaseRunner:
         
         self.n_rollout_threads =  self.algo_args["train"]["n_rollout_threads"]
         
+        self.print_flag = True
+        
         if "policy_freq" in self.algo_args["algo"]:
             self.policy_freq = self.algo_args["algo"]["policy_freq"]
         else:
@@ -826,7 +828,7 @@ class OffPolicyBaseRunner:
                     if len(np.array(available_actions).shape) == 3
                     else None,
                 )
-                self.insert(data)
+                self.insert(data, True)
                 obs = new_obs
                 share_obs = new_share_obs
                 available_actions = new_available_actions
@@ -907,9 +909,7 @@ class OffPolicyBaseRunner:
                     self.eval_envs.close()
                 # 메인 프로세스 강제 종료
                 os._exit(0)  # sys.exit(0) 대신 os._exit(0) 사용
-            return obs, share_obs, available_actions
-        else:
-            return obs, share_obs, available_actions
+        return obs, share_obs, available_actions
 
     def insert(self, data, is_warmup=False):
         (
@@ -927,7 +927,10 @@ class OffPolicyBaseRunner:
 
         dones_env = np.all(dones, axis=1)  # if all agents are done, then env is done
         reward_env = np.mean(rewards, axis=1).flatten() # 각 환경 별로 3개의 에이전트들의 리워드를 axis=1 방향으로 평균을 내고, flatten()으로 1차원으로 펴준다. 결국 (2,)차원이 된다.
-        self.train_episode_rewards += reward_env    # 어차피 한 에피소드 기준으로 다 더하는 것이다. 지금 당장에는 insert 불러질때마다 더하는 것
+        if is_warmup:
+            self.train_episode_rewards += 0
+        else:
+            self.train_episode_rewards += reward_env    # 어차피 한 에피소드 기준으로 다 더하는 것이다. 지금 당장에는 insert 불러질때마다 더하는 것
 
         # valid_transition denotes whether each transition is valid or not (invalid if corresponding agent is dead)
         valid_transitions = 1 - self.agent_deaths   # shape: (n_threads, n_agents, 1)
@@ -999,7 +1002,7 @@ class OffPolicyBaseRunner:
                 next_available_actions,  # None or (n_agents, n_threads, next_action_number)
             )
         if is_warmup:
-            if self.tdd_args["off_extrinsic_reward"]:
+            if self.tdd_args["train"]["off_extrinsic_reward"]:
                 pass
             else:
                 self.buffer.insert(data)

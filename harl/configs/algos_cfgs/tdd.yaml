@@ -24,9 +24,9 @@ train:
   # total number of learning steps of learning
   learning_steps: 8000 # 4로 해보자
   # warmup logging interval
-  warmup_logging_interval: 500
+  warmup_logging_interval: 1000
   # learning logging interval
-  learning_logging_interval: 500
+  learning_logging_interval: 1000
   # batch size for training
   batch_size: 1024 # 512가 원래 값
   # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
@@ -62,7 +62,7 @@ train:
   # max batch size
   max_batch_size: 1024
   # default k value
-  default_k_value: 11
+  default_k_value: 7
   # tdd with mean state
   tdd_with_mean_state: False
 
