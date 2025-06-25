@@ -206,19 +206,16 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         if len(rollout_buffer_all) == 0 or len(rollout_buffer_all[0]) == 0:
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
                 logger.warning("rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-            return torch.zeros(batch_size, device=self.device)
-        
-        # 지금 저 new_pos는 agent_wise로 들어오긴 했다. 하지만 나는 모든 에이전트에 쌓인 rollout_buffer_all에 대해 mrn_distance를 계산해야겠다.
-        
-        """ 가장 최근에 쌓인 rollout_buffer에서 batch_size만큼 obs 가져오는게 좋아 보인다. """
+            # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
+            return torch.ones(batch_size, device=self.device) * 0.1
         
         # 우선 new_pos의 절대좌표만 잘라내자
-        new_pos_abs = new_pos[:, 2:4]
-        new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
-        if self.tdd_args["network"]["use_independent_nets"]:
-            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
+        if new_pos.shape[1] >= 4:  # 최소 4차원 이상인지 확인
+            new_pos_abs = new_pos[:, 2:4]
         else:
-            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
+            # 차원이 부족한 경우 전체를 사용
+            raise ValueError("new_pos의 차원이 부족합니다.")
+        new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
         
         # 가장 최근 스텝만 가져오기
         n_agents = len(rollout_buffer_all)
@@ -241,7 +238,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         if len(flattened) == 0:
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
                 logger.warning("flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-            return torch.zeros(batch_size, device=self.device)
+            # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
+            return torch.ones(batch_size, device=self.device) * 0.1
         
         all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
         all_obs_temp = all_obs_temp.reshape(-1, 2)
@@ -258,11 +256,14 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
                 logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
             new_pos_abs = new_pos_abs[:all_obs.shape[0]]
-            
+            batch_size = all_obs.shape[0]  # batch_size도 조정
+        
         all_obs = torch.tensor(all_obs, device=self.device).float()
         if self.tdd_args["network"]["use_independent_nets"]:
+            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
             phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
         else:
+            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
             phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
         
         # 최적화: 배치 크기 제한으로 메모리 사용량 감소
@@ -332,14 +333,15 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         if len(rollout_buffer_agent) == 0 or len(rollout_buffer_agent[0]) == 0:
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
                 logger.warning(f"agent {agent_id}의 rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-            return torch.zeros(batch_size, device=self.device)
+            # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
+            return torch.ones(batch_size, device=self.device) * 0.1
         
-        new_pos_abs = new_pos[:, 2:4]
-        new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
-        if self.tdd_args["network"]["use_independent_nets"]:
-            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
+        # 우선 new_pos의 절대좌표만 잘라내자
+        if new_pos.shape[1] >= 4:  # 최소 4차원 이상인지 확인
+            new_pos_abs = new_pos[:, 2:4]
         else:
-            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
+            raise ValueError("new_pos의 차원이 부족합니다.")
+        new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
         
         # 가장 최근 스텝만 가져오기
         n_trajs = len(rollout_buffer_agent)
@@ -356,7 +358,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         if len(flattened) == 0:
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
                 logger.warning(f"agent {agent_id}의 flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-            return torch.zeros(batch_size, device=self.device)
+            # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
+            return torch.ones(batch_size, device=self.device) * 0.1
         
         all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
         all_obs_temp = all_obs_temp.reshape(-1, 2)
@@ -373,11 +376,14 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
                 logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
             new_pos_abs = new_pos_abs[:all_obs.shape[0]]
-            
+            batch_size = all_obs.shape[0]  # batch_size도 조정
+        
         all_obs = torch.tensor(all_obs, device=self.device).float()
         if self.tdd_args["network"]["use_independent_nets"]:
+            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
             phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
         else:
+            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
             phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
         
         # 최적화: 배치 크기 제한으로 메모리 사용량 감소

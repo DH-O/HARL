@@ -85,6 +85,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
             if self.args["algo"] == "hasac":
                 actions = []
                 entropy_terms_ls_actors = []
+                alpha_losses = []  # 각 에이전트의 alpha_loss를 저장
                 with torch.no_grad():
                     for agent_id in range(self.num_agents):
                         if self.tdd_runner is None or self.tdd_args["train"]["use_actor_entropy"]:
@@ -190,6 +191,10 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         self.alpha[agent_id] = torch.exp(
                             self.log_alpha[agent_id].detach()
                         )
+                        alpha_losses.append(alpha_loss.item())
+                    else:
+                        alpha_losses.append(0.0)
+                    # Update actions for next iteration
                     actions[agent_id], _ = self.actor[
                         agent_id
                     ].get_actions_with_logprobs(
@@ -271,4 +276,4 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 for agent_id in range(self.num_agents):
                     self.actor[agent_id].soft_update()
             self.critic.soft_update()
-        return critic_loss, actor_loss_ls, alpha_loss
+        return critic_loss, actor_loss_ls, np.mean(alpha_losses) if alpha_losses else 0.0

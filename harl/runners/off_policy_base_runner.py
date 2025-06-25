@@ -405,6 +405,7 @@ class OffPolicyBaseRunner:
             self.tdd_runner.rollout_buffer.clear()
         rollout_history_count = 0
         
+        train_tdd_flag = True if self.tdd_args is not None else False
         for step in range(1, steps + 1):
             actions = self.get_actions(
                 obs, available_actions=available_actions, add_random=True
@@ -483,7 +484,6 @@ class OffPolicyBaseRunner:
             )
             self.insert(data)   # 여기서 이제 롤아웃 버퍼도 야무지게 충전 중일 것이다.
             
-            prev_obs = obs
             obs = new_obs
             share_obs = new_share_obs
             available_actions = new_available_actions
@@ -495,60 +495,61 @@ class OffPolicyBaseRunner:
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads) and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > 0:  # 3000 // 20 = 150
-                    self.tdd_runner.update_tdd_model()
+                    if train_tdd_flag:
+                        self.tdd_runner.update_tdd_model()
+                        train_tdd_flag = False
                     
-                    if self.tdd_args["network"]["use_central_SD"]:
-                        pass
-                    else:
-                        start_pos_ls = []
-                        for i in range(self.num_agents):
-                            start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                            start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
-                        start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                        
-                        midle_pos_ls = []
-                        for i in range(self.num_agents):
-                            midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                            midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
-                        midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                        
-                        end_pos_ls = []
-                        for i in range(self.num_agents):
-                            end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                            end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
-                        end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                        
-                        pos_ls = [start_pos, midle_pos, end_pos]
-                        pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
-                        
-                        # 각 환경과 에이전트별로 거리 맵 생성
-                        for thread_id in range(min(self.n_rollout_threads, 3)):
-                            for agent_id in range(self.num_agents):
-                                for pos_idx in range(3):
-                                    # 랜드마크와 장애물 정보 가져오기
-                                    self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
-                                    landmarks, obstacles = self.envs.remotes[thread_id].recv()
-                                    
-                                    # 목표점 가져오기
-                                    pos = pos_arr[pos_idx][thread_id, agent_id]
-                                    
-                                    # 거리 맵 생성
-                                    self.tdd_runner.plot_distance_map(
-                                        pos, 
-                                        self.env_args["map_size"],
-                                        agent_id,
-                                        landmarks, 
-                                        obstacles, 
-                                        f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
-                                        step=step
-                                    )
-                        self.tdd_runner.rollout_buffer.clear()
+                        if self.tdd_args["network"]["use_central_SD"]:
+                            pass
+                        else:
+                            start_pos_ls = []
+                            for i in range(self.num_agents):
+                                start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                                start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
+                            start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                            
+                            midle_pos_ls = []
+                            for i in range(self.num_agents):
+                                midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                                midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
+                            midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                            
+                            end_pos_ls = []
+                            for i in range(self.num_agents):
+                                end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                                end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
+                            end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                            
+                            pos_ls = [start_pos, midle_pos, end_pos]
+                            pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
+                            
+                            # 각 환경과 에이전트별로 거리 맵 생성
+                            for thread_id in range(min(self.n_rollout_threads, 3)):
+                                for agent_id in range(self.num_agents):
+                                    for pos_idx in range(3):
+                                        # 랜드마크와 장애물 정보 가져오기
+                                        self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
+                                        landmarks, obstacles = self.envs.remotes[thread_id].recv()
+                                        
+                                        # 목표점 가져오기
+                                        pos = pos_arr[pos_idx][thread_id, agent_id]
+                                        
+                                        # 거리 맵 생성
+                                        self.tdd_runner.plot_distance_map(
+                                            pos, 
+                                            self.env_args["map_size"],
+                                            agent_id,
+                                            landmarks, 
+                                            obstacles, 
+                                            f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
+                                            step=step
+                                        )
                 
                 if step % self.algo_args["train"]["train_interval"] == 0:
                     # TDD가 활성화된 경우 롤아웃 버퍼 충분성 체크
+                    buffer_sufficient = True  # 기본값 설정
                     if self.tdd_args is not None:
                         # 롤아웃 버퍼가 충분한지 확인
-                        buffer_sufficient = True
                         
                         # tdd.yaml 설정값에 따라 동적으로 최소 요구사항 설정
                         min_trajectories = max(2, self.tdd_args["train"]["batch_size"] // 1000)  # batch_size에 따라 조정
@@ -569,12 +570,13 @@ class OffPolicyBaseRunner:
                                         buffer_sufficient = False
                                         break
                         
-                        if not buffer_sufficient and step % 1000 == 0:
+                        # 버퍼가 부족한 경우 경고 출력 (1000 스텝마다만)
+                        if not buffer_sufficient:
                             if self.tdd_args is not None:
                                 # 로깅이 활성화된 경우에만 출력
-                                if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                                if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"] and step % 1000 == 0:
                                     logger.warning(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
-                                    logger.warning(f"rollout_history_count: {rollout_history_count}, 현재 롤아웃 버퍼 상태: {self.tdd_runner.rollout_buffer.rollout_history}, 현재 step: {step}")
+                                    logger.warning(f"rollout_history_count: {rollout_history_count}, 현재 롤아웃 버퍼 상태: {len(self.tdd_runner.rollout_buffer.rollout_history[0]) if len(self.tdd_runner.rollout_buffer.rollout_history) > 0 else 0}개 궤적, 현재 step: {step}")
                             else:
                                 print(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
                             continue
@@ -587,6 +589,13 @@ class OffPolicyBaseRunner:
                         self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
                         self.writter.add_scalar("alpha_loss", alpha_loss, step)
                     self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
+                    
+                    # 버퍼가 충분한 경우에만 롤아웃 버퍼 클리어
+                    if self.tdd_args is not None and buffer_sufficient and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads):
+                        self.tdd_runner.rollout_buffer.clear()
+                        train_tdd_flag = True
+                        if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                            logger.info(f"Step {step}: 롤아웃 버퍼를 클리어했습니다. 새로운 궤적 수집을 시작합니다.")
             else:
                 if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
                     if self.algo_args["train"]["use_linear_lr_decay"]:  # False
