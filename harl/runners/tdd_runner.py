@@ -204,7 +204,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         # 빈 버퍼 체크
         if len(rollout_buffer_all) == 0 or len(rollout_buffer_all[0]) == 0:
-            logger.warning("rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.warning("rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
             return torch.zeros(batch_size, device=self.device)
         
         # 지금 저 new_pos는 agent_wise로 들어오긴 했다. 하지만 나는 모든 에이전트에 쌓인 rollout_buffer_all에 대해 mrn_distance를 계산해야겠다.
@@ -238,7 +239,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         # 빈 flattened 배열 체크
         if len(flattened) == 0:
-            logger.warning("flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.warning("flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
             return torch.zeros(batch_size, device=self.device)
         
         all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
@@ -253,7 +255,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             indices = np.random.choice(all_obs.shape[0], batch_size, replace=False)
             all_obs = all_obs[indices]
         else:
-            logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
             new_pos_abs = new_pos_abs[:all_obs.shape[0]]
             
         all_obs = torch.tensor(all_obs, device=self.device).float()
@@ -314,7 +317,9 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
         if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
-            logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
+            # 로깅이 활성화된 경우에만 출력
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
         
         return entropy_term
         
@@ -325,7 +330,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         # 빈 버퍼 체크
         if len(rollout_buffer_agent) == 0 or len(rollout_buffer_agent[0]) == 0:
-            logger.warning(f"agent {agent_id}의 rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.warning(f"agent {agent_id}의 rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
             return torch.zeros(batch_size, device=self.device)
         
         new_pos_abs = new_pos[:, 2:4]
@@ -348,7 +354,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         # 빈 flattened 배열 체크
         if len(flattened) == 0:
-            logger.warning(f"agent {agent_id}의 flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.warning(f"agent {agent_id}의 flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
             return torch.zeros(batch_size, device=self.device)
         
         all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
@@ -363,7 +370,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             indices = np.random.choice(all_obs.shape[0], batch_size, replace=False)
             all_obs = all_obs[indices]
         else:
-            logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
             new_pos_abs = new_pos_abs[:all_obs.shape[0]]
             
         all_obs = torch.tensor(all_obs, device=self.device).float()
@@ -424,7 +432,9 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
         if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
-            logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
+            # 로깅이 활성화된 경우에만 출력
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
         
         return entropy_term
     

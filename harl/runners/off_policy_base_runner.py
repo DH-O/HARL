@@ -325,6 +325,10 @@ class OffPolicyBaseRunner:
         
     def _setup_tdd_logging(self):
         """TDD 관련 로깅 설정을 초기화합니다."""
+        # TDD 로깅이 비활성화된 경우 설정하지 않음
+        if self.tdd_args is not None and "logging" in self.tdd_args and not self.tdd_args["logging"]["enable_tdd_logging"]:
+            return
+            
         # 이미 설정되었는지 확인
         tdd_logger = logging.getLogger('harl.runners.tdd_runner')
         base_logger = logging.getLogger('harl.runners.off_policy_base_runner')
@@ -567,8 +571,10 @@ class OffPolicyBaseRunner:
                         
                         if not buffer_sufficient and step % 1000 == 0:
                             if self.tdd_args is not None:
-                                logger.warning(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
-                                logger.warning(f"rollout_history_count: {rollout_history_count}, 현재 롤아웃 버퍼 상태: {self.tdd_runner.rollout_buffer.rollout_history}, 현재 step: {step}")
+                                # 로깅이 활성화된 경우에만 출력
+                                if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                                    logger.warning(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
+                                    logger.warning(f"rollout_history_count: {rollout_history_count}, 현재 롤아웃 버퍼 상태: {self.tdd_runner.rollout_buffer.rollout_history}, 현재 step: {step}")
                             else:
                                 print(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
                             continue

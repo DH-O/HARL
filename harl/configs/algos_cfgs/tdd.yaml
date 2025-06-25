@@ -65,3 +65,10 @@ train:
   default_k_value: 11
   # tdd with mean state
   tdd_with_mean_state: False
+
+# Logging Parameters
+logging:
+  # enable TDD logging
+  enable_tdd_logging: False
+  # enable performance monitoring logs
+  enable_performance_logs: False
