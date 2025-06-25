@@ -135,7 +135,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                             if sp_available_actions is not None
                             else None,
                         )
-                        entropy_terms_ls_actors[agent_id] = self.tdd_runner.calculate_decentral_state_entropy(sp_obs[agent_id], agent_id, step).unsqueeze(-1)
+                        entropy_terms_ls_actors[agent_id] = -self.tdd_runner.calculate_decentral_state_entropy(sp_obs[agent_id], agent_id, step).unsqueeze(-1)
                         
                     if self.state_type == "EP":
                         entropy_term_agent_wise = entropy_terms_ls_actors[agent_id]
