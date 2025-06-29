@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 import matplotlib.pyplot as plt
 import matplotlib
 import matplotlib.cm as cm
-import matplotlib.colors as mcolors
 """ exploration metric 끝 """
 from harl.common.valuenorm import ValueNorm
 from torch.distributions import Categorical
@@ -461,7 +460,7 @@ class OffPolicyBaseRunner:
                     rewards = (1 - int_rew_coeff) * rewards + int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # size (n_threads, n_agents, 1)
                 else:
                     if self.tdd_args["train"]["off_extrinsic_reward"]:
-                        rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                        rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # 여기서 리워드가 대체되는 것은 잘 되는 것 같은데?
                     else:
                         rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
             """ TDD intrinsic reward 끝 """
@@ -501,7 +500,7 @@ class OffPolicyBaseRunner:
                         self.tdd_runner.update_tdd_model()
                         train_tdd_flag = False
                     
-                        if self.tdd_args["network"]["use_central_SD"]:
+                        if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
                             pass
                         else:
                             start_pos_ls = []
@@ -546,44 +545,24 @@ class OffPolicyBaseRunner:
                                             f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
                                             step=step
                                         )
+                        self.tdd_runner.rollout_buffer.clear()
                 
                 if step % self.algo_args["train"]["train_interval"] == 0:
-                    # TDD가 활성화된 경우 롤아웃 버퍼 충분성 체크
-                    buffer_sufficient = True  # 기본값 설정
-                    if self.tdd_args is not None:
-                        # 롤아웃 버퍼가 충분한지 확인
+                    if self.tdd_args["train"]["use_state_entropy"]:
+                        # TDD가 활성화된 경우 롤아웃 버퍼 충분성 체크
+                        # critic이 실제로 사용할 batch_size를 먼저 얻는다
+                        sampled_data = self.buffer.sample()
+                        actual_batch_size = sampled_data[0].shape[0]  # 예: share_obs의 shape[0]
+                        max_historical_samples = self.tdd_args["train"].get("max_historical_samples")
                         
-                        # tdd.yaml 설정값에 따라 동적으로 최소 요구사항 설정
-                        min_trajectories = max(2, self.tdd_args["train"]["batch_size"] // 1000)  # batch_size에 따라 조정
-                        min_steps_per_traj = max(10, self.tdd_args["train"]["max_historical_samples"] // 200)  # max_historical_samples에 따라 조정
-                        
-                        if len(self.tdd_runner.rollout_buffer.rollout_history) == 0:
-                            buffer_sufficient = False
-                        else:
-                            for agent_id in range(self.num_agents):
-                                agent_history = self.tdd_runner.rollout_buffer.rollout_history[agent_id]
-                                if len(agent_history) < min_trajectories:
-                                    buffer_sufficient = False
-                                    break
-                                
-                                # 각 궤적에 충분한 스텝이 있는지 확인
-                                for traj in agent_history:
-                                    if len(traj) < min_steps_per_traj:
-                                        buffer_sufficient = False
-                                        break
-                        
-                        # 버퍼가 부족한 경우 경고 출력 (1000 스텝마다만)
-                        if not buffer_sufficient:
-                            if self.tdd_args is not None:
-                                # 로깅이 활성화된 경우에만 출력
-                                if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"] and step % 1000 == 0:
-                                    logger.warning(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
-                                    logger.warning(f"rollout_history_count: {rollout_history_count}, 현재 롤아웃 버퍼 상태: {len(self.tdd_runner.rollout_buffer.rollout_history[0]) if len(self.tdd_runner.rollout_buffer.rollout_history) > 0 else 0}개 궤적, 현재 step: {step}")
-                            else:
-                                print(f"Step {step}: 롤아웃 버퍼가 부족합니다. (최소 {min_trajectories}개 궤적, 각 궤적당 {min_steps_per_traj}스텝 필요)")
-                            continue
-                    
-                    for _ in range(update_num): # update_num은 50이다.
+                        total_samples = self.num_agents * len(self.tdd_runner.rollout_buffer.rollout_history[0]) * len(self.tdd_runner.rollout_buffer.rollout_history[0][0]) * self.n_rollout_threads
+                        usable_samples = min(total_samples, max_historical_samples)
+                        if usable_samples < actual_batch_size:
+                            print(f"[TDD-INFO] usable all_obs 샘플 수 부족: {usable_samples}/{actual_batch_size}")
+                            print(f"[TDD-INFO] usable all_obs가 충분하지 않아 train을 건너뜁니다.")
+                            continue  # train을 건너뜀
+                    # 충분할 때만 train 진행
+                    for _ in range(update_num):
                         critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
                         self.writter.add_scalar("critic_loss", critic_loss, step)
                         self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
@@ -593,11 +572,11 @@ class OffPolicyBaseRunner:
                     self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
                     
                     # 버퍼가 충분한 경우에만 롤아웃 버퍼 클리어
-                    if self.tdd_args is not None and buffer_sufficient and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads):
-                        self.tdd_runner.rollout_buffer.clear()
-                        train_tdd_flag = True
-                        if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-                            logger.info(f"Step {step}: 롤아웃 버퍼를 클리어했습니다. 새로운 궤적 수집을 시작합니다.")
+                    # if self.tdd_args is not None and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads):
+                    #     self.tdd_runner.rollout_buffer.clear()
+                    #     train_tdd_flag = True
+                    #     if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
+                    #         logger.info(f"Step {step}: 롤아웃 버퍼를 클리어했습니다. 새로운 궤적 수집을 시작합니다.")
             else:
                 if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
                     if self.algo_args["train"]["use_linear_lr_decay"]:  # False
@@ -868,7 +847,7 @@ class OffPolicyBaseRunner:
             # 에이전트의 위치만 추출 (x, y 좌표)
             agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
             # 각 환경과 에이전트별로 거리 맵 생성 (최적화: 샘플링으로 줄임)
-            if self.tdd_args["network"]["use_central_SD"]:
+            if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
                 pass
             else:
                 # 샘플링: 전체 환경과 에이전트 중 일부만 선택
@@ -979,7 +958,7 @@ class OffPolicyBaseRunner:
                 obs,  # (n_agents, n_threads, obs_dim)
                 actions,  # (n_agents, n_threads, action_dim)
                 available_actions,  # None or (n_agents, n_threads, action_number)
-                rewards[:, 0],  # (n_threads, 1)
+                np.sum(rewards, axis=1),  # (n_threads, 1) 즉 원래 첫번째 에이전트의 리워드만 들어갔었다. rewards[:, 0] 형태로.
                 np.expand_dims(dones_env, axis=-1),  # (n_threads, 1)   이게 dones다.
                 valid_transitions.transpose(1, 0, 2),  # (n_agents, n_threads, 1)
                 terms,  # (n_threads, 1)
@@ -1190,7 +1169,7 @@ class OffPolicyBaseRunner:
                             self.eval_envs.remotes[eval_i].send(("get_landmarks_and_obstacles", None))
                             landmarks, obstacles = self.eval_envs.remotes[eval_i].recv()
                             
-                            if self.tdd_args["network"]["use_central_SD"]:
+                            if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
                                 pass
                             else:
                                 for agent_id in range(self.num_agents):

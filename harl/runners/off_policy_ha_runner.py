@@ -51,14 +51,15 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     if self.print_flag:
                         if self.tdd_runner is not None:
                             print(
-                                f"TDD is used for agent {agent_id}."
+                                f"TDD is used, non calculate central state entropy."
                             )
                         else:
                             print(
-                                f"TDD is not used for agent {agent_id}."
+                                f"TDD is not used, non calculate central state entropy."
                             )
                         self.print_flag = False
                     next_entropy_terms_critics.append(next_logp_action)
+            """ 실제 크리틱 학습 하는 곳 -> soft_twin_continuous_q_critic.py로 간다. """
             critic_loss = self.critic.train(
                 sp_share_obs,
                 sp_actions,

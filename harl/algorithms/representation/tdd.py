@@ -180,8 +180,20 @@ class TDDModel:
         """ 모든 에이전트에 대한 데이터 후처리 """
         for agent_id in range(len(data)):
             if not self.args["network"]["use_central_SD"]:
-                obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2)
-                # data[0][0][0]['obs'].shape가 (1,1,2)로 나오긴 했는데 음
+                try:
+                    obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # 에피소드 수가 300개일때 무슨 문제가 생기는 것 같다.
+                except ValueError as e:
+                    # shape 정보 수집
+                    shapes = [
+                        [np.array(step['obs']).shape for step in episode]
+                        for episode in data[agent_id]
+                    ]
+                    # 에러 메시지와 shape 정보 출력
+                    raise ValueError(
+                        f"agent_id={agent_id}에서 obs shape 불일치로 변환 실패!\n"
+                        f"shapes={shapes}\n"
+                        f"원본 에러: {e}"
+                    )
                 obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
                 next_obss[agent_id] = np.array([[step['next_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
                 next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)

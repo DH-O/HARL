@@ -1,7 +1,7 @@
 # This is the configuration file for the HASAC algorithm.
 seed:
   # whether to use the specified seed
-  seed_specify: False
+  seed_specify: True
   # seed
   seed: 77
 device:
@@ -76,7 +76,7 @@ algo:
   # discount factor
   gamma: 0.99
   # off-policy buffer size
-  buffer_size: 1000000  # 10^6
+  buffer_size: 10000000  # 10^6을 주로 사용했으나 지금은 10^7
   # training batch size
   batch_size: 1024 # 1000이 원래 값
   # coefficient for target model soft update
