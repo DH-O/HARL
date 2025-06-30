@@ -59,6 +59,49 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                             )
                         self.print_flag = False
                     next_entropy_terms_critics.append(next_logp_action)
+            
+            # NaN 체크를 위한 디버깅 코드 추가
+            
+            # numpy 배열인 경우 텐서로 변환 후 체크
+            def check_nan(data, name):
+                if isinstance(data, np.ndarray):
+                    if np.isnan(data).any():
+                        print(f"{name} has NaN!")
+                        return True
+                elif isinstance(data, torch.Tensor):
+                    if torch.isnan(data.clone().detach()).any():
+                        print(f"{name} has NaN!")
+                        return True
+                return False
+            
+            if check_nan(sp_share_obs, "sp_share_obs"):
+                return None, None, None
+            if check_nan(sp_actions, "sp_actions"):
+                return None, None, None
+            if check_nan(sp_reward, "sp_reward"):
+                return None, None, None
+            if check_nan(sp_done, "sp_done"):
+                return None, None, None
+            if check_nan(sp_valid_transition, "sp_valid_transition"):
+                return None, None, None
+            if check_nan(sp_term, "sp_term"):
+                return None, None, None
+            if check_nan(sp_next_share_obs, "sp_next_share_obs"):
+                return None, None, None
+            if check_nan(sp_gamma, "sp_gamma"):
+                return None, None, None
+            
+            # 리스트인 경우 각 요소 체크
+            for i, action in enumerate(next_actions):
+                if torch.isnan(action.clone().detach()).any():
+                    print(f"next_actions[{i}] has NaN!")
+                    return None, None, None
+            
+            for i, entropy in enumerate(next_entropy_terms_critics):
+                if torch.isnan(entropy.clone().detach()).any():
+                    print(f"next_entropy_terms_critics[{i}] has NaN!")
+                    return None, None, None
+            
             """ 실제 크리틱 학습 하는 곳 -> soft_twin_continuous_q_critic.py로 간다. """
             critic_loss = self.critic.train(
                 sp_share_obs,

@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max400_offext_SDLearn8000_his6000_warm400k_valnorm_SACint500 --use_exploration_metric 1 --use_tdd 1
+python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max300_SDLearn6000_his4000_warm300k_coeff20_stop05 --use_exploration_metric 1 --use_tdd 1

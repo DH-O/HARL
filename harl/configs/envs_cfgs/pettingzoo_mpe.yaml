@@ -3,7 +3,7 @@ continuous_actions: True
 # 아래서부터 내가 새로 추가한 것
 map_size: 1
 N: 3  # 3기준 900이 좋아보임 600도 시도중
-max_cycles: 400
+max_cycles: 300
 use_wall: True
 sparse_reward: False
 agent_size: 0.04

@@ -197,264 +197,259 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         return np.array(int_rew).transpose(2, 0, 1)  # 저렇게 바꾸면 -> (n_rollout_threads, n_agents, 1)
     
-    # def calculate_central_state_entropy(self, new_pos, agent_id, step=None):
-        # batch_size = new_pos.shape[0]
-        # # 보통 1024, obs의 차원만큼 인풋이 들어올거다.
-        # rollout_buffer_all = self.rollout_buffer.rollout_history[:]    # (n_agents, n_trajs, max_cycles, (n_rollout_threads, {'obs': (2,), 'next_obs': (2,)})) ex/ (3, 29, 800, (dict...))
+    def calculate_central_state_entropy(self, new_pos, agent_id, step=None):
+        batch_size = new_pos.shape[0]
+        # 보통 1024, obs의 차원만큼 인풋이 들어올거다.
+        rollout_buffer_all = self.rollout_buffer.rollout_history[:]    # (n_agents, n_trajs, max_cycles, (n_rollout_threads, {'obs': (2,), 'next_obs': (2,)})) ex/ (3, 29, 800, (dict...))
         
-        # # 빈 버퍼 체크
-        # if len(rollout_buffer_all) == 0 or len(rollout_buffer_all[0]) == 0:
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.warning("rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-        #     # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
-        #     return torch.ones(batch_size, device=self.device) * 0.1
+        # 빈 버퍼 체크
+        if len(rollout_buffer_all) == 0 or len(rollout_buffer_all[0]) == 0:
+            raise ValueError("calculate_central_state_entropy 함수에서 rollout_buffer가 비어있습니다.")
+            # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
+            # return torch.ones(batch_size, device=self.device) * 0.1
         
-        # # 우선 new_pos의 절대좌표만 잘라내자
-        # if new_pos.shape[1] >= 4:  # 최소 4차원 이상인지 확인
-        #     new_pos_abs = new_pos[:, 2:4]
-        # else:
-        #     # 차원이 부족한 경우 전체를 사용
-        #     raise ValueError("new_pos의 차원이 부족합니다.")
-        # new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
+        # 우선 new_pos의 절대좌표만 잘라내자
+        if new_pos.shape[1] >= 4:  # 최소 4차원 이상인지 확인
+            new_pos_abs = new_pos[:, 2:4]
+        else:
+            # 차원이 부족한 경우 전체를 사용
+            raise ValueError("new_pos의 차원이 부족합니다.")
+        new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
         
-        # # 가장 최근 스텝만 가져오기
-        # n_agents = len(rollout_buffer_all)
-        # n_trajs = len(rollout_buffer_all[0])
-        # n_cycles = len(rollout_buffer_all[0][0])
+        # 가장 최근 스텝만 가져오기 위한 전초전
+        n_agents = len(rollout_buffer_all)
+        n_trajs = len(rollout_buffer_all[0])
+        n_cycles = len(rollout_buffer_all[0][0])
         
+        # rollout_buffer_all에 있는 모든 데이터 수
         # total_steps = n_agents * n_trajs * n_cycles
         # start_idx = max(0, total_steps - 10 * batch_size)
         
-        # # numpy array로 변환하고 reshape
-        # rollout_array = np.array(rollout_buffer_all, dtype=object)
-        # # rollout_array[0]에서 batch_size // n_agents만큼 뒤에서부터 잘라내기
-        # # 안전한 인덱싱을 위해 최소값 사용
-        # # 아무튼간에 지금 rollout_array는 (n_agents, n_trajs, n_cycles) 형태이다.
-        # # n_trajs에서 뒤에 x 개를 뽑고, 그리고 n_cycles에서 뒤에 y 개를 뽑아야하는데 중요한 점은
-        # # x * y * n_rollout_threads * n_agents = batch_size 를 넘어야 한다.
-        # # factor = n_rollout_threads * n_agents라고 치고, x * y * factor = batch_size 를 만족하는 x, y를 찾아야 한다.
-        # # 그러면 x = batch_size // (y * factor) 가 되고, y = batch_size // (x * factor) 가 된다.
-        # factor = rollout_array[0][0][0]["obs"].shape[0] * n_agents
-        # x_times_y = batch_size // factor + 1
-        # safe_batch_size_1 = int(np.ceil(x_times_y / n_trajs))
-        # safe_batch_size_2 = int(np.ceil(x_times_y / n_cycles))
-        # safe_batch_size = int(max(max(safe_batch_size_1, safe_batch_size_2), np.ceil(np.sqrt(x_times_y))))
+        # numpy array로 변환하고 reshape
+        rollout_array = np.array(rollout_buffer_all, dtype=object)
+        # 아무튼간에 지금 rollout_array는 (n_agents, n_trajs, n_cycles) 형태이다.
+        # n_trajs에서 뒤에 x 개를 뽑고, 그리고 n_cycles에서 뒤에 y 개를 뽑아야하는데 중요한 점은
+        # x * y * n_rollout_threads * n_agents = batch_size 를 넘어야 한다.
+        # factor = n_rollout_threads * n_agents라고 치고, x * y * factor = batch_size 를 만족하는 x, y를 찾아야 한다.
+        # 그러면 x = batch_size // (y * factor) 가 되고, y = batch_size // (x * factor) 가 된다.
+        factor = rollout_array[0][0][0]["obs"].shape[0] * n_agents
+        x_times_y = batch_size // factor + 1
+        safe_batch_size_1 = int(np.ceil(x_times_y / n_trajs))
+        safe_batch_size_2 = int(np.ceil(x_times_y / n_cycles))
+        safe_batch_size = int(max(max(safe_batch_size_1, safe_batch_size_2), np.ceil(np.sqrt(x_times_y))))
         
-        # rollout_array = rollout_array[:, -safe_batch_size:, -safe_batch_size:]
-        # flattened = rollout_array.reshape(-1)   # 위 작업 진행 안 했다면 0~799번째까지 연속된 궤적이고 800번째부터 다시 초기화된다. 그렇게 3200이 rollout_array의 [0][5][0]이 됩니다만... 그렇다는건 flattened[3200]까진 전부 0번째 에이전트의 궤적이란 말이다;;
+        rollout_array = rollout_array[:, -safe_batch_size:, -safe_batch_size:]
+        flattened = rollout_array.reshape(-1)   # (x * y * factor,)차원정도 될 것 같은데
         
-        # # 빈 flattened 배열 체크
-        # if len(flattened) == 0:
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.warning("flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-        #     # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
-        #     return torch.ones(batch_size, device=self.device) * 0.1
+        # 빈 flattened 배열 체크
+        if len(flattened) == 0:
+            raise ValueError("calculate_central_state_entropy 함수에서 flattened가 비어있습니다.")
+            # return torch.ones(batch_size, device=self.device) * 0.1
         
-        # all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
-        # all_obs_temp = all_obs_temp.reshape(-1, 2)
+        all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
+        all_obs_temp = all_obs_temp.reshape(-1, 2)
         # all_obs = all_obs_temp[start_idx:]
+        all_obs = all_obs_temp
         
-        # # 최적화: Historical data 샘플링 제한
-        # if all_obs.shape[0] > self.max_historical_samples:
-        #     # 가장 최근 데이터부터 MAX_HISTORICAL_SAMPLES만큼 선택
-        #     all_obs = all_obs[-self.max_historical_samples:]
-        # elif batch_size <= all_obs.shape[0]:
-        #     indices = np.random.choice(all_obs.shape[0], batch_size, replace=False)
-        #     all_obs = all_obs[indices]
-        # else:
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
-        #     new_pos_abs = new_pos_abs[:all_obs.shape[0]]
-        #     if batch_size != all_obs.shape[0]:
-        #         raise ValueError(f"batch_size({batch_size})와 all_obs.shape[0]({all_obs.shape[0]})가 다릅니다. 버퍼가 충분하지 않습니다. n_tajs: {n_trajs}, safe_batch_size: {safe_batch_size}, flattened.shape: {flattened.shape}")
+        # 최적화: Historical data 샘플링 제한
+        if all_obs.shape[0] > self.max_historical_samples:
+            # 가장 최근 데이터부터 MAX_HISTORICAL_SAMPLES만큼 선택
+            all_obs = all_obs[-self.max_historical_samples:]
+        elif batch_size <= all_obs.shape[0]:
+            indices = np.random.choice(all_obs.shape[0], batch_size, replace=False)
+            all_obs = all_obs[indices]
+        else:
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_graph_logging"]:
+                logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
+            new_pos_abs = new_pos_abs[:all_obs.shape[0]]
+            if batch_size != all_obs.shape[0]:
+                raise ValueError(f"batch_size({batch_size})와 all_obs.shape[0]({all_obs.shape[0]})가 다릅니다. 버퍼가 충분하지 않습니다. n_tajs: {n_trajs}, safe_batch_size: {safe_batch_size}, flattened.shape: {flattened.shape}")
         
-        # all_obs = torch.tensor(all_obs, device=self.device).float()
-        # if self.tdd_args["network"]["use_independent_nets"]:
-        #     phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
-        #     phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
-        # else:
-        #     phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
-        #     phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
+        all_obs = torch.tensor(all_obs, device=self.device).float()
+        if self.tdd_args["network"]["use_independent_nets"]:
+            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
+            phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
+        else:
+            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
+            phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
         
-        # # 최적화: 배치 크기 제한으로 메모리 사용량 감소
-        # if batch_size > self.max_batch_size:
-        #     entropy_terms = []
-        #     for i in range(0, batch_size, self.max_batch_size):
-        #         end_idx = min(i + self.max_batch_size, batch_size)
-        #         phi_y_batch = phi_y[i:end_idx]
+        # 최적화: 배치 크기 제한으로 메모리 사용량 감소
+        if batch_size > self.max_batch_size:
+            entropy_terms = []
+            for i in range(0, batch_size, self.max_batch_size):
+                end_idx = min(i + self.max_batch_size, batch_size)
+                phi_y_batch = phi_y[i:end_idx]
                 
-        #         # Historical data도 배치 크기에 맞게 조정
-        #         phi_x_batch = phi_x[:min(self.max_batch_size, len(phi_x))]
+                # Historical data도 배치 크기에 맞게 조정
+                phi_x_batch = phi_x[:min(self.max_batch_size, len(phi_x))]
                 
-        #         dists_batch = mrn_distance(phi_x_batch[:, None], phi_y_batch[None, :])
+                dists_batch = mrn_distance(phi_x_batch[:, None], phi_y_batch[None, :])
                 
-        #         # k 값 동적 조정
-        #         k_value = min(self.default_k_value, phi_x_batch.shape[0] // 10)
-        #         if k_value < 2:
-        #             k_value = 2
+                # k 값 동적 조정
+                k_value = min(self.default_k_value, phi_x_batch.shape[0] // 10)
+                if k_value < 2:
+                    k_value = 2
                 
-        #         _, indices_batch = torch.topk(dists_batch, k=k_value, largest=False, dim=0)
-        #         nearest_neighbors_batch = indices_batch[1:, :]  # 첫번째 행은 아마 자기 자신일 가능성이 꽤 높다.
+                _, indices_batch = torch.topk(dists_batch, k=k_value, largest=False, dim=0)
+                nearest_neighbors_batch = indices_batch[1:, :]  # 첫번째 행은 아마 자기 자신일 가능성이 꽤 높다.
                 
-        #         neighbor_distances_batch = torch.gather(dists_batch, dim=0, index=nearest_neighbors_batch)
-        #         neighbor_distances_batch = neighbor_distances_batch.T
+                neighbor_distances_batch = torch.gather(dists_batch, dim=0, index=nearest_neighbors_batch)
+                neighbor_distances_batch = neighbor_distances_batch.T
                 
-        #         normalized_distances_batch = neighbor_distances_batch / (neighbor_distances_batch.max() + 1e-8)
-        #         sum_distances_batch = torch.sum(normalized_distances_batch, dim=1)
-        #         sum_distances_batch = torch.clamp(sum_distances_batch, max=1e6)
-        #         entropy_term_batch = torch.log(1 + (1/k_value) * sum_distances_batch)
+                normalized_distances_batch = neighbor_distances_batch / (neighbor_distances_batch.max() + 1e-8)
+                sum_distances_batch = torch.sum(normalized_distances_batch, dim=1)
+                sum_distances_batch = torch.clamp(sum_distances_batch, max=1e6)
+                entropy_term_batch = torch.log(1 + (1/k_value) * sum_distances_batch)
                 
-        #         entropy_terms.append(entropy_term_batch)
+                entropy_terms.append(entropy_term_batch)
             
-        #     entropy_term = torch.cat(entropy_terms)
-        # else:
-        #     # 기존 로직 (작은 배치 크기)
-        #     dists = mrn_distance(phi_x[:, None], phi_y[None, :])
+            entropy_term = torch.cat(entropy_terms)
+        else:
+            # 기존 로직 (작은 배치 크기)
+            dists = mrn_distance(phi_x[:, None], phi_y[None, :])
             
-        #     # k 값 동적 조정
-        #     k_value = min(self.default_k_value, phi_x.shape[0] // 10)
-        #     if k_value < 2:
-        #         k_value = 2
+            # k 값 동적 조정
+            k_value = min(self.default_k_value, phi_x.shape[0] // 10)
+            if k_value < 2:
+                k_value = 2
             
-        #     _, indices = torch.topk(dists, k=k_value, largest=False, dim=0)
-        #     nearest_neighbors = indices[1:, :]
+            _, indices = torch.topk(dists, k=k_value, largest=False, dim=0)
+            nearest_neighbors = indices[1:, :]
             
-        #     neighbor_distances = torch.gather(dists, dim=0, index=nearest_neighbors)
-        #     neighbor_distances = neighbor_distances.T
-        #     normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
-        #     sum_distances = torch.sum(normalized_distances, dim=1)
-        #     sum_distances = torch.clamp(sum_distances, max=1e6)
-        #     entropy_term = torch.log(1 + (1/k_value) * sum_distances)
+            neighbor_distances = torch.gather(dists, dim=0, index=nearest_neighbors)
+            neighbor_distances = neighbor_distances.T
+            normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
+            sum_distances = torch.sum(normalized_distances, dim=1)
+            sum_distances = torch.clamp(sum_distances, max=1e6)
+            entropy_term = torch.log(1 + (1/k_value) * sum_distances)
         
-        # # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
-        # if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
-        #     # 로깅이 활성화된 경우에만 출력
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
+        # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
+        if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
+            # 로깅이 활성화된 경우에만 출력
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_logger_logging"]:
+                logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
         
-        # return entropy_term # 여기서 540이 찍히네 왜와이?
+        return entropy_term # 여기서 540이 찍히네 왜와이?
         
-    # def calculate_decentral_state_entropy(self, new_pos, agent_id, step=None):
-        # batch_size = new_pos.shape[0]
-        # # 보통 1000, obs의 차원만큼 인풋이 들어올거다.
-        # rollout_buffer_agent = self.rollout_buffer.rollout_history[agent_id]    # (n_timesteps, n_cycles, (n_rollout_threads, {'obs': (2,), 'next_obs': (2,)})) ex/ (29, 800, (dict...))
+    def calculate_decentral_state_entropy(self, new_pos, agent_id, step=None):
+        batch_size = new_pos.shape[0]
+        # 보통 1000, obs의 차원만큼 인풋이 들어올거다.
+        rollout_buffer_agent = self.rollout_buffer.rollout_history[agent_id]    # (n_timesteps, n_cycles, (n_rollout_threads, {'obs': (2,), 'next_obs': (2,)})) ex/ (29, 800, (dict...))
         
-        # # 빈 버퍼 체크
-        # if len(rollout_buffer_agent) == 0 or len(rollout_buffer_agent[0]) == 0:
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.warning(f"agent {agent_id}의 rollout_buffer가 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-        #     # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
-        #     return torch.ones(batch_size, device=self.device) * 0.1
+        # 빈 버퍼 체크
+        if len(rollout_buffer_agent) == 0 or len(rollout_buffer_agent[0]) == 0:
+            raise ValueError("calculate_decentral_state_entropy 함수에서 rollout_buffer가 비어있습니다.")
         
-        # # 우선 new_pos의 절대좌표만 잘라내자
-        # if new_pos.shape[1] >= 4:  # 최소 4차원 이상인지 확인
-        #     new_pos_abs = new_pos[:, 2:4]
-        # else:
-        #     raise ValueError("new_pos의 차원이 부족합니다.")
-        # new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
+        # 우선 new_pos의 절대좌표만 잘라내자
+        if new_pos.shape[1] >= 4:  # 최소 4차원 이상인지 확인
+            new_pos_abs = new_pos[:, 2:4]
+        else:
+            raise ValueError("new_pos의 차원이 부족합니다.")
+        new_pos_abs = torch.tensor(new_pos_abs, device=self.device).float()
         
-        # # 가장 최근 스텝만 가져오기
-        # n_trajs = len(rollout_buffer_agent)
-        # n_cycles = len(rollout_buffer_agent[0])
+        # 가장 최근 스텝만 가져오기
+        n_trajs = len(rollout_buffer_agent)
+        n_cycles = len(rollout_buffer_agent[0])
         
-        # total_steps = n_trajs * n_cycles
-        # start_idx = max(0, total_steps - 10 * batch_size)
+        total_steps = n_trajs * n_cycles
+        start_idx = max(0, total_steps - 10 * batch_size)
         
-        # rollout_array = np.array(rollout_buffer_agent, dtype=object)
-        # rollout_array = rollout_array[-batch_size:, -batch_size:]
-        # flattened = rollout_array.reshape(-1)
+        rollout_array = np.array(rollout_buffer_agent, dtype=object)
+        factor = rollout_array[0][0]["obs"].shape[0]
+        x_times_y = batch_size // factor + 1
+        safe_batch_size_1 = int(np.ceil(x_times_y / n_trajs))
+        safe_batch_size_2 = int(np.ceil(x_times_y / n_cycles))
+        safe_batch_size = int(max(max(safe_batch_size_1, safe_batch_size_2), np.ceil(np.sqrt(x_times_y))))
+        rollout_array = rollout_array[-safe_batch_size:, -safe_batch_size:]
+        flattened = rollout_array.reshape(-1)
         
-        # # 빈 flattened 배열 체크
-        # if len(flattened) == 0:
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.warning(f"agent {agent_id}의 flattened 배열이 비어있습니다. 기본 엔트로피 값을 반환합니다.")
-        #     # 기본 엔트로피 값으로 작은 양수 값 반환 (0보다는 크지만 매우 작은 값)
-        #     return torch.ones(batch_size, device=self.device) * 0.1
+        # 빈 flattened 배열 체크
+        if len(flattened) == 0:
+            raise ValueError("calculate_decentral_state_entropy 함수에서 flattened가 비어있습니다.")
         
-        # all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
-        # all_obs_temp = all_obs_temp.reshape(-1, 2)
-        # all_obs = all_obs_temp[start_idx:]
+        all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
+        all_obs_temp = all_obs_temp.reshape(-1, 2)
+        all_obs = all_obs_temp[start_idx:]
         
-        # # 최적화: Historical data 샘플링 제한
-        # if all_obs.shape[0] > self.max_historical_samples:
-        #     # 가장 최근 데이터부터 MAX_HISTORICAL_SAMPLES만큼 선택
-        #     all_obs = all_obs[-self.max_historical_samples:]
-        # elif batch_size <= all_obs.shape[0]:
-        #     indices = np.random.choice(all_obs.shape[0], batch_size, replace=False)
-        #     all_obs = all_obs[indices]
-        # else:
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
-        #     new_pos_abs = new_pos_abs[:all_obs.shape[0]]
-        #     if batch_size != all_obs.shape[0]:
-        #         raise ValueError(f"batch_size({batch_size})와 all_obs.shape[0]({all_obs.shape[0]})가 다릅니다. 버퍼가 충분하지 않습니다.")
-        #         # batch_size = all_obs.shape[0]  # batch_size도 조정
+        # 최적화: Historical data 샘플링 제한
+        if all_obs.shape[0] > self.max_historical_samples:
+            # 가장 최근 데이터부터 MAX_HISTORICAL_SAMPLES만큼 선택
+            all_obs = all_obs[-self.max_historical_samples:]
+        elif batch_size <= all_obs.shape[0]:
+            indices = np.random.choice(all_obs.shape[0], batch_size, replace=False)
+            all_obs = all_obs[indices]
+        else:
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_logger_logging"]:
+                logger.warning(f"batch_size({batch_size})가 all_obs.shape[0]({all_obs.shape[0]})보다 큽니다. new_pos_abs를 all_obs.shape[0]만큼 잘라냅니다.")
+            new_pos_abs = new_pos_abs[:all_obs.shape[0]]
+            if batch_size != all_obs.shape[0]:
+                raise ValueError(f"batch_size({batch_size})와 all_obs.shape[0]({all_obs.shape[0]})가 다릅니다. 버퍼가 충분하지 않습니다.")
         
-        # all_obs = torch.tensor(all_obs, device=self.device).float()
-        # if self.tdd_args["network"]["use_independent_nets"]:
-        #     phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
-        #     phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
-        # else:
-        #     phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
-        #     phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
+        all_obs = torch.tensor(all_obs, device=self.device).float()
+        if self.tdd_args["network"]["use_independent_nets"]:
+            phi_y = self.tdd_model.s_encoder[agent_id](new_pos_abs)  # (batch_size, hidden_dim)가 결과다.
+            phi_x = self.tdd_model.s_encoder[agent_id](all_obs)  # (batch_size, hidden_dim)
+        else:
+            phi_y = self.tdd_model.s_encoder(new_pos_abs)  # (batch_size, hidden_dim)
+            phi_x = self.tdd_model.s_encoder(all_obs)  # (batch_size, hidden_dim)
         
-        # # 최적화: 배치 크기 제한으로 메모리 사용량 감소
-        # if batch_size > self.max_batch_size:
-        #     entropy_terms = []
-        #     for i in range(0, batch_size, self.max_batch_size):
-        #         end_idx = min(i + self.max_batch_size, batch_size)
-        #         phi_y_batch = phi_y[i:end_idx]
+        # 최적화: 배치 크기 제한으로 메모리 사용량 감소
+        if batch_size > self.max_batch_size:
+            entropy_terms = []
+            for i in range(0, batch_size, self.max_batch_size):
+                end_idx = min(i + self.max_batch_size, batch_size)
+                phi_y_batch = phi_y[i:end_idx]
                 
-        #         # Historical data도 배치 크기에 맞게 조정
-        #         phi_x_batch = phi_x[:min(self.max_batch_size, len(phi_x))]
+                # Historical data도 배치 크기에 맞게 조정
+                phi_x_batch = phi_x[:min(self.max_batch_size, len(phi_x))]
                 
-        #         dists_batch = mrn_distance(phi_x_batch[:, None], phi_y_batch[None, :])
+                dists_batch = mrn_distance(phi_x_batch[:, None], phi_y_batch[None, :])
                 
-        #         # k 값 동적 조정
-        #         k_value = min(self.default_k_value, phi_x_batch.shape[0] // 10)
-        #         if k_value < 2:
-        #             k_value = 2
+                # k 값 동적 조정
+                k_value = min(self.default_k_value, phi_x_batch.shape[0] // 10)
+                if k_value < 2:
+                    k_value = 2
                 
-        #         _, indices_batch = torch.topk(dists_batch, k=k_value, largest=False, dim=0)
-        #         nearest_neighbors_batch = indices_batch[1:, :]  # 첫번째 행은 아마 자기 자신일 가능성이 꽤 높다.
+                _, indices_batch = torch.topk(dists_batch, k=k_value, largest=False, dim=0)
+                nearest_neighbors_batch = indices_batch[1:, :]  # 첫번째 행은 아마 자기 자신일 가능성이 꽤 높다.
                 
-        #         neighbor_distances_batch = torch.gather(dists_batch, dim=0, index=nearest_neighbors_batch)
-        #         neighbor_distances_batch = neighbor_distances_batch.T
+                neighbor_distances_batch = torch.gather(dists_batch, dim=0, index=nearest_neighbors_batch)
+                neighbor_distances_batch = neighbor_distances_batch.T
                 
-        #         normalized_distances_batch = neighbor_distances_batch / (neighbor_distances_batch.max() + 1e-8)
-        #         sum_distances_batch = torch.sum(normalized_distances_batch, dim=1)
-        #         sum_distances_batch = torch.clamp(sum_distances_batch, max=1e6)
-        #         entropy_term_batch = torch.log(1 + (1/k_value) * sum_distances_batch)
+                normalized_distances_batch = neighbor_distances_batch / (neighbor_distances_batch.max() + 1e-8)
+                sum_distances_batch = torch.sum(normalized_distances_batch, dim=1)
+                sum_distances_batch = torch.clamp(sum_distances_batch, max=1e6)
+                entropy_term_batch = torch.log(1 + (1/k_value) * sum_distances_batch)
                 
-        #         entropy_terms.append(entropy_term_batch)
+                entropy_terms.append(entropy_term_batch)
             
-        #     entropy_term = torch.cat(entropy_terms)
-        # else:
-        #     # 기존 로직 (작은 배치 크기)
-        #     dists = mrn_distance(phi_x[:, None], phi_y[None, :])
+            entropy_term = torch.cat(entropy_terms)
+        else:
+            # 기존 로직 (작은 배치 크기)
+            dists = mrn_distance(phi_x[:, None], phi_y[None, :])
             
-        #     # k 값 동적 조정
-        #     k_value = min(self.default_k_value, phi_x.shape[0] // 10)
-        #     if k_value < 2:
-        #         k_value = 2
+            # k 값 동적 조정
+            k_value = min(self.default_k_value, phi_x.shape[0] // 10)
+            if k_value < 2:
+                k_value = 2
             
-        #     _, indices = torch.topk(dists, k=k_value, largest=False, dim=0)
-        #     nearest_neighbors = indices[1:, :]
+            _, indices = torch.topk(dists, k=k_value, largest=False, dim=0)
+            nearest_neighbors = indices[1:, :]
             
-        #     neighbor_distances = torch.gather(dists, dim=0, index=nearest_neighbors)
-        #     neighbor_distances = neighbor_distances.T
-        #     normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
-        #     sum_distances = torch.sum(normalized_distances, dim=1)
-        #     sum_distances = torch.clamp(sum_distances, max=1e6)
-        #     entropy_term = torch.log(1 + (1/k_value) * sum_distances)
+            neighbor_distances = torch.gather(dists, dim=0, index=nearest_neighbors)
+            neighbor_distances = neighbor_distances.T
+            normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
+            sum_distances = torch.sum(normalized_distances, dim=1)
+            sum_distances = torch.clamp(sum_distances, max=1e6)
+            entropy_term = torch.log(1 + (1/k_value) * sum_distances)
         
-        # # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
-        # if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
-        #     # 로깅이 활성화된 경우에만 출력
-        #     if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-        #         logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
+        # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
+        if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
+            # 로깅이 활성화된 경우에만 출력
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_logger_logging"]:
+                logger.info(f"Step {step}: Processing batch_size: {batch_size}, historical_samples: {len(all_obs)}")
         
-        # return entropy_term
+        return entropy_term
     
     def plot_distance_map(self, start_pos, map_size, agent_id, landmarks, obstacles, suffix=None, step=None):
         """목표 지점으로부터의 거리를 시각화합니다.

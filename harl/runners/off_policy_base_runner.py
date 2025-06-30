@@ -327,7 +327,7 @@ class OffPolicyBaseRunner:
     def _setup_tdd_logging(self):
         """TDD 관련 로깅 설정을 초기화합니다."""
         # TDD 로깅이 비활성화된 경우 설정하지 않음
-        if self.tdd_args is not None and "logging" in self.tdd_args and not self.tdd_args["logging"]["enable_tdd_logging"]:
+        if self.tdd_args is not None and "logging" in self.tdd_args and not self.tdd_args["logging"]["enable_graph_logging"]:
             return
             
         # 이미 설정되었는지 확인
@@ -406,7 +406,7 @@ class OffPolicyBaseRunner:
             self.tdd_runner.rollout_buffer.clear()
         rollout_history_count = 0
         
-        train_tdd_flag = True if self.tdd_args is not None else False
+        train_tdd_sac_flag = False if self.tdd_args is not None else True
         for step in range(1, steps + 1):
             actions = self.get_actions(
                 obs, available_actions=available_actions, add_random=True
@@ -496,102 +496,94 @@ class OffPolicyBaseRunner:
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads) and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > 0:  # 3000 // 20 = 150
-                    if train_tdd_flag:
-                        self.tdd_runner.update_tdd_model()
-                        train_tdd_flag = False
-                    
-                        if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
-                            pass
-                        else:
-                            start_pos_ls = []
-                            for i in range(self.num_agents):
-                                start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                                start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
-                            start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                            
-                            midle_pos_ls = []
-                            for i in range(self.num_agents):
-                                midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                                midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
-                            midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                            
-                            end_pos_ls = []
-                            for i in range(self.num_agents):
-                                end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                                end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
-                            end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
-                            
-                            pos_ls = [start_pos, midle_pos, end_pos]
-                            pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
-                            
-                            # 각 환경과 에이전트별로 거리 맵 생성
-                            for thread_id in range(min(self.n_rollout_threads, 3)):
-                                for agent_id in range(self.num_agents):
-                                    for pos_idx in range(3):
-                                        # 랜드마크와 장애물 정보 가져오기
-                                        self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
-                                        landmarks, obstacles = self.envs.remotes[thread_id].recv()
-                                        
-                                        # 목표점 가져오기
-                                        pos = pos_arr[pos_idx][thread_id, agent_id]
-                                        
-                                        # 거리 맵 생성
-                                        self.tdd_runner.plot_distance_map(
-                                            pos, 
-                                            self.env_args["map_size"],
-                                            agent_id,
-                                            landmarks, 
-                                            obstacles, 
-                                            f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
-                                            step=step
-                                        )
-                        self.tdd_runner.rollout_buffer.clear()
-                
-                if step % self.algo_args["train"]["train_interval"] == 0:
-                    if self.tdd_args["train"]["use_state_entropy"]:
-                        # TDD가 활성화된 경우 롤아웃 버퍼 충분성 체크
-                        # critic이 실제로 사용할 batch_size를 먼저 얻는다
-                        sampled_data = self.buffer.sample()
-                        actual_batch_size = sampled_data[0].shape[0]  # 예: share_obs의 shape[0]
-                        max_historical_samples = self.tdd_args["train"].get("max_historical_samples")
+                    self.tdd_runner.update_tdd_model()
+                    if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
+                        pass
+                    else:
+                        start_pos_ls = []
+                        for i in range(self.num_agents):
+                            start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                            start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
+                        start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
                         
-                        total_samples = self.num_agents * len(self.tdd_runner.rollout_buffer.rollout_history[0]) * len(self.tdd_runner.rollout_buffer.rollout_history[0][0]) * self.n_rollout_threads
-                        usable_samples = min(total_samples, max_historical_samples)
-                        if usable_samples < actual_batch_size:
-                            print(f"[TDD-INFO] usable all_obs 샘플 수 부족: {usable_samples}/{actual_batch_size}")
-                            print(f"[TDD-INFO] usable all_obs가 충분하지 않아 train을 건너뜁니다.")
-                            continue  # train을 건너뜀
-                    # 충분할 때만 train 진행
-                    for _ in range(update_num):
-                        critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
-                        self.writter.add_scalar("critic_loss", critic_loss, step)
-                        self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
-                        self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
-                        self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
-                        self.writter.add_scalar("alpha_loss", alpha_loss, step)
-                    self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
-                    
-                    # 버퍼가 충분한 경우에만 롤아웃 버퍼 클리어
-                    # if self.tdd_args is not None and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads):
-                    #     self.tdd_runner.rollout_buffer.clear()
-                    #     train_tdd_flag = True
-                    #     if "logging" in self.tdd_args and self.tdd_args["logging"]["enable_performance_logs"]:
-                    #         logger.info(f"Step {step}: 롤아웃 버퍼를 클리어했습니다. 새로운 궤적 수집을 시작합니다.")
-            else:
-                if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
-                    if self.algo_args["train"]["use_linear_lr_decay"]:  # False
-                        if self.share_param:
-                            self.actor[0].lr_decay(step, steps)
-                        else:
+                        midle_pos_ls = []
+                        for i in range(self.num_agents):
+                            midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                            midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
+                        midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                        
+                        end_pos_ls = []
+                        for i in range(self.num_agents):
+                            end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
+                            end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
+                        end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                        
+                        pos_ls = [start_pos, midle_pos, end_pos]
+                        pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
+                        
+                        # 각 환경과 에이전트별로 거리 맵 생성
+                        for thread_id in range(min(self.n_rollout_threads, 3)):
                             for agent_id in range(self.num_agents):
-                                self.actor[agent_id].lr_decay(step, steps)
-                        self.critic.lr_decay(step, steps)
-                    for _ in range(update_num): # update_num은 50이다.
-                        critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
-                        self.writter.add_scalar("critic_loss", critic_loss, step)
-                        self.writter.add_scalar("actor_loss", actor_loss, step)
-                        self.writter.add_scalar("alpha_loss", alpha_loss, step)
-            
+                                for pos_idx in range(3):
+                                    # 랜드마크와 장애물 정보 가져오기
+                                    self.envs.remotes[thread_id].send(("get_landmarks_and_obstacles", None))
+                                    landmarks, obstacles = self.envs.remotes[thread_id].recv()
+                                    
+                                    # 목표점 가져오기
+                                    pos = pos_arr[pos_idx][thread_id, agent_id]
+                                    
+                                    # 거리 맵 생성
+                                    self.tdd_runner.plot_distance_map(
+                                        pos, 
+                                        self.env_args["map_size"],
+                                        agent_id,
+                                        landmarks, 
+                                        obstacles, 
+                                        f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
+                                        step=step
+                                    )
+                    self.tdd_runner.rollout_buffer.clear()
+                    train_tdd_sac_flag = False
+                
+                if self.tdd_args["train"]["use_state_entropy"]:
+                    if len(self.tdd_runner.rollout_buffer.rollout_history[0]) * self.env_args["max_cycles"] > self.algo_args["train"]["train_interval"]: # (n_agents, n_trajs, n_rollout_steps, {'obs': (n_threads,2), 'next_obs': (n_threads,2), 'dones': (n_threads,)})
+                        if not train_tdd_sac_flag:
+                            step_start_tdd_sac = step
+                            train_tdd_sac_flag = True
+                        else:
+                            if (step - step_start_tdd_sac) % self.algo_args["train"]["train_interval"] == 0:
+                                for _ in range(update_num):
+                                    critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
+                                    self.writter.add_scalar("critic_loss", critic_loss, step)
+                                    self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                                    self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                                    self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
+                                    self.writter.add_scalar("alpha_loss", alpha_loss, step)
+                else:
+                    if step % self.algo_args["train"]["train_interval"] == 0:
+                        # 충분할 때만 train 진행
+                        for _ in range(update_num):
+                            critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
+                            self.writter.add_scalar("critic_loss", critic_loss, step)
+                            self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                            self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                            self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
+                            self.writter.add_scalar("alpha_loss", alpha_loss, step)
+                    else:
+                        if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
+                            if self.algo_args["train"]["use_linear_lr_decay"]:  # False
+                                if self.share_param:
+                                    self.actor[0].lr_decay(step, steps)
+                                else:
+                                    for agent_id in range(self.num_agents):
+                                        self.actor[agent_id].lr_decay(step, steps)
+                                self.critic.lr_decay(step, steps)
+                            for _ in range(update_num): # update_num은 50이다.
+                                critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
+                                self.writter.add_scalar("critic_loss", critic_loss, step)
+                                self.writter.add_scalar("actor_loss", actor_loss, step)
+                                self.writter.add_scalar("alpha_loss", alpha_loss, step)
+                self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
             if step % self.algo_args["train"]["eval_interval"] == 0:
                 print(f"rollout_history_count: {rollout_history_count}")
                 cur_step = (

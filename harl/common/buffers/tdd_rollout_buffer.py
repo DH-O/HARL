@@ -65,7 +65,7 @@ class RolloutBuffer:
             all_rollouts_mean_state: updated mean state of all rollouts
         """
         for agent_id in range(self.num_agents):
-            self.rollout_history[agent_id].append(self.current_rollout_states[agent_id])  # [agent_id]해서 (n_rollout_steps, n_rollout_threads, n_truncated_obs_dim)
+            self.rollout_history[agent_id].append(self.current_rollout_states[agent_id])  # [agent_id]해서 (n_trajs, n_rollout_steps, {'obs': (n_threads,2), 'next_obs': (n_threads,2), 'dones': (n_threads,)})
             self.current_rollout_states[agent_id] = []
         
         return self.all_rollouts_mean_state  # (n_agents, n_rollout_threads, 2) 형태의 리스트

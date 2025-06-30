@@ -148,6 +148,15 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
         next_q_values1 = self.target_critic(next_share_obs, next_actions)
         next_q_values2 = self.target_critic2(next_share_obs, next_actions)
         next_q_values = torch.min(next_q_values1, next_q_values2)   # 여기서 min을 취해서 과대평가를 방지한다.
+        
+        # NaN 체크 추가
+        if torch.isnan(next_q_values.clone().detach()).any():
+            print("next_q_values has NaN!")
+        if torch.isnan(next_logp_actions.clone().detach()).any():
+            print("next_logp_actions has NaN!")
+        if torch.isnan(self.alpha.clone().detach()).any():
+            print("self.alpha has NaN!")
+        
         if self.use_proper_time_limits:
             # 시간 제한을 적절하게 처리할지 결정한다.   (tuned config에 의하면 이게 맞다.)
             # 시간 제한으로 에피소드가 종결된 상황과, 실제 목표 달성이나 실패로 인한 에피소드가 종결된 상황(term = 1)을 구별지려는 것이다.
@@ -175,6 +184,11 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
                 q_targets = reward + gamma * (
                     next_q_values - self.alpha * next_logp_actions
                 ) * (1 - done)
+        
+        # q_targets 계산 후 NaN 체크
+        if torch.isnan(q_targets.clone().detach()).any():
+            print("q_targets has NaN!")
+        
         if self.use_huber_loss: # 안 쓴다.
             if self.state_type == "FP" and self.use_policy_active_masks:
                 critic_loss1 = (
