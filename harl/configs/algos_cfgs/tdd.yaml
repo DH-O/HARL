@@ -30,17 +30,20 @@ train:
   # batch size for training
   batch_size: 1024 # 512가 원래 값
   # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
-  coeff_stop_ratio: 0.5
+  coeff_stop_ratio: 1
   # coeff magnitude
-  coeff_magnitude: 20
+  coeff_magnitude: 10
   # learning rate
   learning_rate: 1e-3
+  
+  # use updated inter-agent intrinsic reward
+  use_updated_inter: False
   # coeff for inter-agent intrinsic reward
   coeff_inter_agent_int_rew: 0
   # off the extrinsic reward
   off_extrinsic_reward: False
   # update interval of rollout history
-  update_interval_of_rollout_history: 4000 # 3000 * 800 = 2400000 즉 이 숫자만큼 히스토리가 쌓여야 tdd학습이 진행된다.
+  update_interval_of_rollout_history: 5000 # 3000 * 800 = 2400000 즉 이 숫자만큼 히스토리가 쌓여야 tdd학습이 진행된다.
   # use synthetic data
   use_synthetic_data: False
   # number of trajectories for synthetic data
@@ -58,7 +61,7 @@ train:
   # use actor entropy
   use_actor_entropy: True
   # max historical samples
-  max_historical_samples: 4000
+  max_historical_samples: 5000
   # max batch size
   max_batch_size: 1024
   # default k value

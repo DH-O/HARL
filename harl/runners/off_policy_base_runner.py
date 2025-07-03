@@ -404,6 +404,7 @@ class OffPolicyBaseRunner:
         
         if self.tdd_args is not None:
             self.tdd_runner.rollout_buffer.clear()
+            # 안 버리는게 나을지도? 하지만 end_rollout()이 마지막이 아니라서 current_state에서 문제가 발생할 수 있다.
         rollout_history_count = 0
         
         train_tdd_sac_flag = False if self.tdd_args is not None else True

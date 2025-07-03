@@ -8,41 +8,6 @@ import time
 import logging
 logger = logging.getLogger(__name__)
 
-# class RunningMeanStd:
-#     def __init__(self, epsilon=1e-4, shape=(), momentum=None):
-#         self.mean = np.zeros(shape, dtype=np.float64)
-#         self.var = np.ones(shape, dtype=np.float64)
-#         self.count = epsilon
-#         self.momentum = momentum
-
-#     def update(self, x):
-#         batch_mean = np.mean(x, axis=0)
-#         batch_var = np.var(x, axis=0)
-#         batch_count = len(x)
-        
-#         if self.momentum is None:
-#             delta = batch_mean - self.mean
-#             tot_count = self.count + batch_count
-#             new_mean = self.mean + delta * batch_count / tot_count
-#             m_a = self.var * self.count
-#             m_b = batch_var * batch_count
-#             M2 = m_a + m_b + np.square(delta) * self.count * batch_count / tot_count
-#             new_var = M2 / tot_count
-#             new_count = tot_count
-#         else:
-#             new_mean = self.momentum * self.mean + (1 - self.momentum) * batch_mean
-#             new_var = self.momentum * self.var + (1 - self.momentum) * batch_var
-#             new_count = self.count + batch_count
-
-#         self.mean = new_mean
-#         self.var = new_var
-#         self.count = new_count
-
-#     @property
-#     def std(self):
-#         return np.sqrt(self.var + 1e-8)
-
-
 class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
     def __init__(self, n_rollout_threads, num_agents, observation_space, tdd_args=None, save_dir=None):
         if tdd_args is None:
@@ -81,13 +46,6 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         self.last_reward_update = None
         self.prev_obs = None
         
-        # 리워드 정규화를 위한 변수들
-        # self.int_rew_norm = self.tdd_args.get("int_rew_norm", 0)  # 0: 정규화 없음, 1: 정규화
-        # self.int_rew_clip = self.tdd_args.get("int_rew_clip", 0.0)  # 클리핑 값
-        # self.int_rew_eps = self.tdd_args.get("int_rew_eps", 1e-8)  # 수치 안정성을 위한 작은 값
-        # self.int_rew_momentum = self.tdd_args.get("int_rew_momentum", None)  # 모멘텀 값
-        # self.int_rew_stats = RunningMeanStd(momentum=self.int_rew_momentum)
-        
         self.rollout_buffer = RolloutBuffer(
                 {**self.tdd_args["network"], **self.tdd_args["train"], **self.tdd_args["tdd"]},
                 self.observation_space,
@@ -99,23 +57,6 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         if len(self.rollout_buffer.rollout_history[0]) == 0:
             raise ValueError("rollout_buffer.rollout_history가 비어있습니다.")
         self.tdd_model.update(self.rollout_buffer.rollout_history, is_warm_up=is_warm_up)
-        
-    # def normalize_rewards(self, rewards):
-    #     """리워드를 정규화합니다."""
-    #     if self.int_rew_norm == 0:
-    #         return rewards
-            
-    #     # 리워드 통계 업데이트
-    #     self.int_rew_stats.update(rewards.reshape(-1))
-        
-    #     # 정규화
-    #     normalized_rewards = (rewards - self.int_rew_stats.mean) / (self.int_rew_stats.std + self.int_rew_eps)
-        
-    #     # 클리핑
-    #     if self.int_rew_clip > 0:
-    #         normalized_rewards = np.clip(normalized_rewards, -self.int_rew_clip, self.int_rew_clip)
-            
-    #     return normalized_rewards
 
     def _compute_mrn_distance(self, current_state, prev_states, agent_id, n_rollout_threads):
         """현재 상태와 이전 상태들 간의 MRN 거리를 계산합니다."""
@@ -179,7 +120,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 if any(current_rollout_states):
                     prev_states = self._get_prev_states(current_rollout_states, agent_id, pos, is_eval)
                     min_dists = self._compute_mrn_distance(new_pos[agent_id], prev_states, agent_id, n_rollout_threads)
-                    int_rew[agent_id].append(min_dists.cpu().numpy())
+                    int_rew[agent_id].append(min_dists.cpu().numpy())   # 당장 이 때의 shape: list of (n_rollout_threads,)
                     
                     # 에이전트 간 상호작용 고려
                     if self.tdd_args["train"]["coeff_inter_agent_int_rew"] != 0:
@@ -188,10 +129,18 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                             if other_agent_id != agent_id:
                                 other_prev_states = self._get_prev_states(current_rollout_states, other_agent_id, pos, is_eval)
                                 other_min_dists = self._compute_mrn_distance(new_pos[agent_id], other_prev_states, other_agent_id, n_rollout_threads)
-                                other_min_dists_ls.append(other_min_dists.cpu().numpy())
+                                other_min_dists_ls.append(other_min_dists.cpu().numpy())    # n_agents - 1개의 이웃에 대해 n_rollout_threads 각각의 최소 temporal distance들을 저장해둠둠
                         
-                        other_min_dists_final = np.min(np.array(other_min_dists_ls), axis=0)
-                        int_rew[agent_id] += other_min_dists_final * self.tdd_args["train"]["coeff_inter_agent_int_rew"]
+                        if self.tdd_args["train"]["use_updated_inter"]:
+                            if len(self.rollout_buffer.current_rollout_states[agent_id]) > 0:
+                                vals, _ = torch.topk(torch.tensor(np.array(other_min_dists_ls)), k=self.num_agents // 2, dim=0, largest=False)
+                                other_min_dists_final = np.array(torch.log(1 + 1 / (self.num_agents // 2) * (torch.sum(vals, axis=0) ** (self.num_agents - 1))).cpu().numpy())
+                                int_rew[agent_id] += other_min_dists_final * self.tdd_args["train"]["coeff_inter_agent_int_rew"]    # (1, n_rollout_threads)로 변신한다.
+                            else:
+                                raise ValueError(f"calculate_inter_int_rew 함수에서 current_rollout_states가 비어있습니다. agent_id: {agent_id}, current_rollout_states: {self.rollout_buffer.current_rollout_states}")
+                        else:
+                            other_min_dists_final = np.min(np.array(other_min_dists_ls), axis=0)
+                            int_rew[agent_id] += other_min_dists_final * self.tdd_args["train"]["coeff_inter_agent_int_rew"]    # (n_rollout_threads,)
                 else:
                     int_rew[agent_id].append(np.zeros(n_rollout_threads))
         
@@ -221,9 +170,6 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         n_trajs = len(rollout_buffer_all[0])
         n_cycles = len(rollout_buffer_all[0][0])
         
-        # rollout_buffer_all에 있는 모든 데이터 수
-        # total_steps = n_agents * n_trajs * n_cycles
-        # start_idx = max(0, total_steps - 10 * batch_size)
         
         # numpy array로 변환하고 reshape
         rollout_array = np.array(rollout_buffer_all, dtype=object)
@@ -248,7 +194,6 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
         all_obs_temp = all_obs_temp.reshape(-1, 2)
-        # all_obs = all_obs_temp[start_idx:]
         all_obs = all_obs_temp
         
         # 최적화: Historical data 샘플링 제한
@@ -321,7 +266,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
             sum_distances = torch.sum(normalized_distances, dim=1)
             sum_distances = torch.clamp(sum_distances, max=1e6)
-            entropy_term = torch.log(1 + (1/k_value) * sum_distances)
+            entropy_term = torch.log(1 + (1/k_value) * (sum_distances ** self.num_agents))
         
         # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
         if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
@@ -419,7 +364,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 normalized_distances_batch = neighbor_distances_batch / (neighbor_distances_batch.max() + 1e-8)
                 sum_distances_batch = torch.sum(normalized_distances_batch, dim=1)
                 sum_distances_batch = torch.clamp(sum_distances_batch, max=1e6)
-                entropy_term_batch = torch.log(1 + (1/k_value) * sum_distances_batch)
+                entropy_term_batch = torch.log(1 + (1/k_value) * (sum_distances_batch ** self.num_agents))
                 
                 entropy_terms.append(entropy_term_batch)
             
@@ -441,7 +386,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             normalized_distances = neighbor_distances / (neighbor_distances.max() + 1e-8)
             sum_distances = torch.sum(normalized_distances, dim=1)
             sum_distances = torch.clamp(sum_distances, max=1e6)
-            entropy_term = torch.log(1 + (1/k_value) * sum_distances)
+            entropy_term = torch.log(1 + (1/k_value) * (sum_distances ** self.num_agents))
         
         # 성능 모니터링을 위한 로깅 추가 (파일에만 기록, step 기준)
         if step is not None and step % 1000 == 0:  # 1000 스텝마다만 로깅
