@@ -16,6 +16,8 @@ train:
   n_rollout_threads: 20 # 20이 원래 값이다.
   # number of total steps
   num_env_steps: 10000000 # 10^7이 원래 값이다.
+  # use_warmup
+  use_warmup: True
   # number of warmup steps
   warmup_steps: 500000 # 10^4이 원래 값이다. 1000 * max_cycles수로 진행중
   # number of steps per train

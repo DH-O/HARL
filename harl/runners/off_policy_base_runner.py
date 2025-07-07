@@ -380,10 +380,12 @@ class OffPolicyBaseRunner:
         self.done_episodes_rewards = []
         
         # warmup
-        print("start warmup")
-        obs, share_obs, available_actions = self.warmup()
-        # obs, share_obs, available_actions = self.envs.reset()
-        print("finish warmup, start training")
+        if self.algo_args["train"]["use_warmup"]:
+            print("start warmup")
+            obs, share_obs, available_actions = self.warmup()
+            print("finish warmup, start training")
+        else:
+            obs, share_obs, available_actions = self.envs.reset()
         
         # train and eval
         steps = (

@@ -134,10 +134,12 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                         if self.tdd_args["train"]["use_updated_inter"]:
                             if len(self.rollout_buffer.current_rollout_states[agent_id]) > 0:
                                 vals, _ = torch.topk(torch.tensor(np.array(other_min_dists_ls)), k=self.num_agents // 2, dim=0, largest=False)
-                                other_min_dists_final = np.array(torch.log(1 + 1 / (self.num_agents // 2) * (torch.sum(vals, axis=0) ** (self.num_agents - 1))).cpu().numpy())
+                                other_min_dists_final = np.array(torch.log(1 + 1 / (self.num_agents // 2) * (torch.sum(vals, axis=0) ** (self.num_agents - 1))).cpu().numpy())  # other_min_dists_final의 shape는 (n_rollout_threads,)이다.
                                 int_rew[agent_id] += other_min_dists_final * self.tdd_args["train"]["coeff_inter_agent_int_rew"]    # (1, n_rollout_threads)로 변신한다.
                             else:
-                                raise ValueError(f"calculate_inter_int_rew 함수에서 current_rollout_states가 비어있습니다. agent_id: {agent_id}, current_rollout_states: {self.rollout_buffer.current_rollout_states}")
+                                print(f"calculate_inter_int_rew 함수에서 current_rollout_states가 비어있습니다. agent_id: {agent_id}, current_rollout_states: {self.rollout_buffer.current_rollout_states}")
+                                int_rew[agent_id] += np.zeros(n_rollout_threads).reshape(1, n_rollout_threads) # np.zeros(n_rollout_threads).reshape(1, n_rollout_threads)의 shape는 (1, n_rollout_threads)이다.
+                                # raise ValueError(f"calculate_inter_int_rew 함수에서 current_rollout_states가 비어있습니다. agent_id: {agent_id}, current_rollout_states: {self.rollout_buffer.current_rollout_states}")
                         else:
                             other_min_dists_final = np.min(np.array(other_min_dists_ls), axis=0)
                             int_rew[agent_id] += other_min_dists_final * self.tdd_args["train"]["coeff_inter_agent_int_rew"]    # (n_rollout_threads,)
@@ -296,9 +298,6 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         n_trajs = len(rollout_buffer_agent)
         n_cycles = len(rollout_buffer_agent[0])
         
-        total_steps = n_trajs * n_cycles
-        start_idx = max(0, total_steps - 10 * batch_size)
-        
         rollout_array = np.array(rollout_buffer_agent, dtype=object)
         factor = rollout_array[0][0]["obs"].shape[0]
         x_times_y = batch_size // factor + 1
@@ -314,7 +313,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         all_obs_temp = np.array([buffer['obs'] for buffer in flattened])    # (엄청여러개, 2)
         all_obs_temp = all_obs_temp.reshape(-1, 2)
-        all_obs = all_obs_temp[start_idx:]
+        all_obs = all_obs_temp
         
         # 최적화: Historical data 샘플링 제한
         if all_obs.shape[0] > self.max_historical_samples:
@@ -479,7 +478,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             
             # 저장
             if step is not None:
-                save_dir = os.path.join(self.save_dir, f'step_{step}')
+                save_dir = os.path.join(self.save_dir, 'distance_map', f'step_{step}')
                 os.makedirs(save_dir, exist_ok=True)  # 디렉토리가 없으면 생성
                 save_path = os.path.join(save_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{suffix}.png')
             else:
