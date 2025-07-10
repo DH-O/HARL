@@ -4,6 +4,8 @@ import argparse
 import os
 import re
 
+import matplotlib
+matplotlib.use('Agg')  # Headless backend 설정
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np

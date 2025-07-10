@@ -1,6 +1,8 @@
 """Rollout buffer for saving and updating mean state of rollouts."""
 import numpy as np
 import torch
+import matplotlib
+matplotlib.use('Agg')  # Headless backend 설정
 import matplotlib.pyplot as plt
 import os
 

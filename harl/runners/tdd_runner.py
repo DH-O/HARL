@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from harl.common.buffers.tdd_rollout_buffer import RolloutBuffer
 from harl.algorithms.representation.tdd import TDDModel, mrn_distance
+import matplotlib
+matplotlib.use('Agg')  # Headless backend 설정
 import matplotlib.pyplot as plt
 import os
 import time

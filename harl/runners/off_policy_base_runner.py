@@ -9,8 +9,9 @@ import setproctitle
 import logging
 logger = logging.getLogger(__name__)
 """ exploration metric """
-import matplotlib.pyplot as plt
 import matplotlib
+matplotlib.use('Agg')  # Headless backend 설정
+import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 """ exploration metric 끝 """
 from harl.common.valuenorm import ValueNorm
@@ -976,7 +977,7 @@ class OffPolicyBaseRunner:
                 next_available_actions,  # None or (n_agents, n_threads, next_action_number)
             )
         if is_warmup:
-            if self.tdd_args["train"]["off_extrinsic_reward"]:
+            if self.tdd_args is not None and self.tdd_args["train"]["off_extrinsic_reward"]:
                 pass
             else:
                 self.buffer.insert(data)
@@ -1145,7 +1146,7 @@ class OffPolicyBaseRunner:
                     rollout_data[eval_i][agent_id].append([xy_coords[0], xy_coords[1], cur_step])
 
             for agent_id in range(self.num_agents):
-                if self.tdd_args["network"]["use_central_SD"]:
+                if self.tdd_args is not None and self.tdd_args["network"]["use_central_SD"]:
                     temp_rollout_buffer[agent_id].append({"share_obs": eval_share_obs.transpose(1, 0, 2)[agent_id], "next_share_obs": next_eval_share_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
                 else:
                     temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})

@@ -1,8 +1,9 @@
 import numpy as np
 import os
+import matplotlib
+matplotlib.use('Agg')  # Headless backend 설정
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-import matplotlib
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
