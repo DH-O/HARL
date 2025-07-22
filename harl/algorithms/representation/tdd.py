@@ -108,9 +108,9 @@ class TDDModel:
         
         # 네트워크
         self.input_dim = input_dim
-        if self.args["network"]["use_central_SD"]:
-            self.latents_dim = self.args["network"]["latents_dim"] * num_agents
-            self.output_dim = self.args["network"]["output_dim"] * num_agents
+        if self.args["network"]["use_full_p_obs"]:
+            self.latents_dim = self.args["network"]["latents_dim"] * 2
+            self.output_dim = self.args["network"]["output_dim"] * 2
         else:
             self.latents_dim = self.args["network"]["latents_dim"]
             self.output_dim = self.args["network"]["output_dim"]
@@ -129,8 +129,8 @@ class TDDModel:
         
         self.tdd_discount = self.args["tdd"]["tdd_discount"]
         
-        if self.args["network"]["use_independent_nets"] and not self.args["network"]["use_central_SD"]:
-            print("use_independent_nets and not use_central_SD")
+        if self.args["network"]["use_independent_nets"]:
+            print("use_independent_nets")
             self.potential_net = [PotentialNet(self.input_dim, self.latents_dim).to(device) for _ in range(num_agents)]
             self.s_encoder = [S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device) for _ in range(num_agents)]
             self.optimizer = []
@@ -140,8 +140,8 @@ class TDDModel:
                     {"params": self.s_encoder[agent_id].parameters(), "lr": self.learning_rate}
                 ])
                 self.optimizer.append(optimizer)
-        elif not self.args["network"]["use_independent_nets"] or self.args["network"]["use_central_SD"]:
-            print("not use_independent_nets or use_central_SD")
+        else:
+            print("not use_independent_nets")
             self.potential_net = PotentialNet(self.input_dim, self.latents_dim).to(device)
             self.s_encoder = S_Encoder(self.input_dim, self.latents_dim, self.output_dim).to(device)
             self.optimizer = torch.optim.Adam(
@@ -150,8 +150,6 @@ class TDDModel:
                     {"params": self.s_encoder.parameters(), "lr": self.learning_rate}
                 ]
             )
-        else:
-            raise ValueError(f"Invalid TDD configuration: use_independent_nets: {self.args['network']['use_independent_nets']} and use_central_SD: {self.args['network']['use_central_SD']}")
         
         # Tensorboard 설정
         if run_dir is not None:
@@ -179,29 +177,23 @@ class TDDModel:
         
         """ 모든 에이전트에 대한 데이터 후처리 """
         for agent_id in range(len(data)):
-            if not self.args["network"]["use_central_SD"]:
-                try:
-                    obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # 에피소드 수가 300개일때 무슨 문제가 생기는 것 같다.
-                except ValueError as e:
-                    # shape 정보 수집
-                    shapes = [
-                        [np.array(step['obs']).shape for step in episode]
-                        for episode in data[agent_id]
-                    ]
-                    # 에러 메시지와 shape 정보 출력
-                    raise ValueError(
-                        f"agent_id={agent_id}에서 obs shape 불일치로 변환 실패!\n"
-                        f"shapes={shapes}\n"
-                        f"원본 에러: {e}"
-                    )
-                obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
-                next_obss[agent_id] = np.array([[step['next_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
-                next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
-            else:
-                obss[agent_id] = np.array([[step['share_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2)
-                obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
-                next_obss[agent_id] = np.array([[step['next_share_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2) 
-                next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
+            try:
+                obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # 에피소드 수가 300개일때 무슨 문제가 생기는 것 같다.
+            except ValueError as e:
+                # shape 정보 수집
+                shapes = [
+                    [np.array(step['obs']).shape for step in episode]
+                    for episode in data[agent_id]
+                ]
+                # 에러 메시지와 shape 정보 출력
+                raise ValueError(
+                    f"agent_id={agent_id}에서 obs shape 불일치로 변환 실패!\n"
+                    f"shapes={shapes}\n"
+                    f"원본 에러: {e}"
+                )
+            obss[agent_id] = torch.from_numpy(obss[agent_id]).to(self.device)
+            next_obss[agent_id] = np.array([[step['next_obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # (n_episode, max_cycles, n_rollout_threads, 2 or 여러차원) 
+            next_obss[agent_id] = torch.from_numpy(next_obss[agent_id]).to(self.device)
             n_trajs[agent_id], n_cum_steps[agent_id], n_threads[agent_id] = obss[agent_id].shape[:3]
         
         # 설마 에이전트별 데이터 수가 다른 경우에 대한 예외처리

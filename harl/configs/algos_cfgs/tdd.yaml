@@ -10,8 +10,10 @@ network:
   activation_function: relu
   # use independent nets
   use_independent_nets: True
-  # use central SD
-  use_central_SD: False
+  # use full partial observation
+  use_full_p_obs: False
+  # use intra obs
+  use_intra_obs: True
 
 tdd:
   # discount factor
@@ -22,7 +24,7 @@ train:
   # total number of learning steps of warmup
   warmup_steps: 5000 # 8000을 권장하나 이젠 5000도 되지 않을까 싶다
   # total number of learning steps of learning
-  learning_steps: 5000  # 본격적으로 온라인학습할 때 한 번 학습할때마나 learning_steps만큼 도는거다.
+  learning_steps: 6000  # 본격적으로 온라인학습할 때 한 번 학습할때마나 learning_steps만큼 도는거다.
   # warmup logging interval
   warmup_logging_interval: 1000
   # learning logging interval
@@ -30,7 +32,7 @@ train:
   # batch size for training
   batch_size: 1024 # 512가 원래 값
   # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
-  coeff_stop_ratio: 1
+  coeff_stop_ratio: 0
   # coeff magnitude
   coeff_magnitude: 10
   # learning rate
@@ -41,7 +43,7 @@ train:
   # coeff for inter-agent intrinsic reward
   coeff_inter_agent_int_rew: 0
   # off the extrinsic reward
-  off_extrinsic_reward: False
+  off_extrinsic_reward: True
   # update interval of rollout history
   update_interval_of_rollout_history: 5000 # 3000 * 800 = 2400000 즉 이 숫자만큼 히스토리가 쌓여야 tdd학습이 진행된다.
   # use synthetic data
@@ -69,6 +71,6 @@ train:
 # Logging Parameters
 logging:
   # turn on/off graph logging
-  enable_graph_logging: True
+  enable_graph_logging: False
   # turn on/off logger logging
   enable_logger_logging: False

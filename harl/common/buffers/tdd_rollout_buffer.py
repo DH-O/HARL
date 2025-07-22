@@ -35,7 +35,7 @@ class RolloutBuffer:
         self.prev_dones_shape = None
         
     def add_observation(self, obs):
-        """Add observation to current rollout.
+        """Add observation to current rollout. Agent-wise로 저장됨
         Args:
             obs: (numpy.ndarray) observation to add
                 shape is (n_envs, n_agents, *obs_shape) or list of (n_envs, *obs_shape)
@@ -46,20 +46,11 @@ class RolloutBuffer:
                 self.prev_obs_shape = obs["obs"][agent_id].shape
                 self.prev_next_obs_shape = obs["next_obs"][agent_id].shape
                 self.prev_dones_shape = obs["dones"][agent_id].shape
-                if self.args["use_central_SD"]:
-                    self.prev_share_obs_shape = obs["share_obs"][agent_id].shape
-                    self.prev_next_share_obs_shape = obs["next_share_obs"][agent_id].shape
             else:
                 assert self.prev_obs_shape == obs["obs"][agent_id].shape, f"Observation shape mismatch: {self.prev_obs_shape} != {obs['obs'][agent_id].shape}"
                 assert self.prev_next_obs_shape == obs["next_obs"][agent_id].shape, f"Next observation shape mismatch: {self.prev_next_obs_shape} != {obs['next_obs'][agent_id].shape}"
                 assert self.prev_dones_shape == obs["dones"][agent_id].shape, f"Dones shape mismatch: {self.prev_dones_shape} != {obs['dones'][agent_id].shape}"
-                if self.args["use_central_SD"]:
-                    assert self.prev_share_obs_shape == obs["share_obs"][agent_id].shape, f"Share observation shape mismatch: {self.prev_share_obs_shape} != {obs['share_obs'][agent_id].shape}"
-                    assert self.prev_next_share_obs_shape == obs["next_share_obs"][agent_id].shape, f"Next share observation shape mismatch: {self.prev_next_share_obs_shape} != {obs['next_share_obs'][agent_id].shape}"
-            if self.args["use_central_SD"]:
-                self.current_rollout_states[agent_id].append({"share_obs": obs["share_obs"][agent_id], "next_share_obs": obs["next_share_obs"][agent_id], "dones": obs["dones"][agent_id]})
-            else:
-                self.current_rollout_states[agent_id].append({"obs": obs["obs"][agent_id], "next_obs": obs["next_obs"][agent_id], "dones": obs["dones"][agent_id]})
+            self.current_rollout_states[agent_id].append({"obs": obs["obs"][agent_id], "next_obs": obs["next_obs"][agent_id], "dones": obs["dones"][agent_id]})
     
     def end_rollout(self):
         """End current rollout and update statistics.

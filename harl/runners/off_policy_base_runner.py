@@ -449,9 +449,12 @@ class OffPolicyBaseRunner:
                         # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
                         int_rew_coeff = 1.0 - (step / (steps // self.tdd_args["train"]["coeff_stop_ratio"]))
                 
-                if self.tdd_args["network"]["use_central_SD"]:
-                    pos = share_obs
-                    new_pos = new_share_obs
+                if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                    pos = obs
+                    new_pos = new_obs
+                elif self.tdd_args["network"]["use_intra_obs"]:
+                    pos = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
+                    new_pos = new_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
                 else:
                     pos = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
                     new_pos = new_obs[:, :, 2:4] # new_obs: (n_threads, n_agents, obs_dim)
@@ -501,29 +504,29 @@ class OffPolicyBaseRunner:
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads) and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > 0:  # 3000 // 20 = 150
                     self.tdd_runner.update_tdd_model()
-                    if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
+                    if not self.tdd_args["logging"]["enable_graph_logging"]:
                         pass
                     else:
                         start_pos_ls = []
                         for i in range(self.num_agents):
                             start_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][0]["obs"]  # (n_agents, traj_id, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                            start_pos_ls.append(start_pos)  # (n_rollout_threads, 2)
-                        start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                            start_pos_ls.append(start_pos)  # (n_rollout_threads, 2) or (n_rollout_threads, n_agents, 고차원)
+                        start_pos = np.stack(start_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2) or (n_rollout_threads, n_agents, 고차원)
                         
                         midle_pos_ls = []
                         for i in range(self.num_agents):
                             midle_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][self.env_args["max_cycles"] // 2]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                            midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2)
-                        midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                            midle_pos_ls.append(midle_pos)  # (n_rollout_threads, 2) or (n_rollout_threads, n_agents, 고차원)
+                        midle_pos = np.stack(midle_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2) or (n_rollout_threads, n_agents, 고차원)
                         
                         end_pos_ls = []
                         for i in range(self.num_agents):
                             end_pos = self.tdd_runner.rollout_buffer.rollout_history[i][-1][-1]["obs"]  # (n_agents, max_cycles, "obs" -> n_rollout_threads, 2) 그래서 좌항은 결국 (n_rollout_threads, 2)
-                            end_pos_ls.append(end_pos)  # (n_rollout_threads, 2)
-                        end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2)
+                            end_pos_ls.append(end_pos)  # (n_rollout_threads, 2) or (n_rollout_threads, n_agents, 고차원)
+                        end_pos = np.stack(end_pos_ls, axis=1)  # (n_rollout_threads, n_agents, 2) or (n_rollout_threads, n_agents, 고차원)
                         
                         pos_ls = [start_pos, midle_pos, end_pos]
-                        pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2)   
+                        pos_arr = np.stack(pos_ls, axis=0)  # (3, n_rollout_threads, n_agents, 2) or (3, n_rollout_threads, n_agents, 고차원)
                         
                         # 각 환경과 에이전트별로 거리 맵 생성
                         for thread_id in range(min(self.n_rollout_threads, 3)):
@@ -840,10 +843,15 @@ class OffPolicyBaseRunner:
             self.tdd_runner.update_tdd_model(is_warm_up=True)
             # 환경 리셋
             obs, _, _ = self.envs.reset()
-            # 에이전트의 위치만 추출 (x, y 좌표)
-            agent_positions = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
+            if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                agents_input = obs  # (n_threads, n_agents, obs_dim)
+            elif self.tdd_args["network"]["use_intra_obs"]:
+                agents_input = obs[:, :, :4] # (n_threads, n_agents, 4차원)
+            else:
+                # 에이전트의 위치만 추출 (x, y 좌표)
+                agents_input = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
             # 각 환경과 에이전트별로 거리 맵 생성 (최적화: 샘플링으로 줄임)
-            if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
+            if not self.tdd_args["logging"]["enable_graph_logging"]:
                 pass
             else:
                 # 샘플링: 전체 환경과 에이전트 중 일부만 선택
@@ -859,7 +867,10 @@ class OffPolicyBaseRunner:
                             landmarks, obstacles = self.envs.remotes[thread_id].recv()
                             
                             # 현재 에이전트의 위치를 목표로 설정
-                            start_pos = agent_positions[thread_id, agent_id].copy()
+                            if not (self.tdd_args["network"]["use_full_p_obs"] or self.tdd_args["network"]["use_intra_obs"]):
+                                start_pos = agents_input[thread_id, agent_id, 2:4].copy()
+                            else:    
+                                start_pos = agents_input[thread_id, agent_id].copy()
                             start_pos[0] = np.clip(start_pos[0] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                             start_pos[1] = np.clip(start_pos[1] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                             # 거리 맵 생성
@@ -868,7 +879,8 @@ class OffPolicyBaseRunner:
                                 self.env_args["map_size"],
                                 agent_id,
                                 landmarks, 
-                                obstacles, 
+                                obstacles,
+                                agents_input[thread_id, agent_id] if (self.tdd_args["network"]["use_full_p_obs"] or self.tdd_args["network"]["use_intra_obs"]) else None,
                                 f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]:.2f}_{start_pos[1]:.2f}",
                                 step=0
                             )
@@ -986,12 +998,13 @@ class OffPolicyBaseRunner:
         
         """ TDD update """
         if self.tdd_args is not None:
-            extracted_obs = obs[:, :, 2:4] # 에이전트 개인의 현재 절대 좌표만 뽑기 (n_agents, n_threads, 2)
-            extracted_next_obs = next_obs[:, :, 2:4] # 에이전트 개인의 다음 절대 좌표만 뽑기 (n_threads, n_agents, 2)
-            if self.tdd_args["network"]["use_central_SD"]:
-                self.tdd_runner.rollout_buffer.add_observation({"share_obs": share_obs.transpose(1, 0, 2), "next_share_obs": next_share_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
+            if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                self.tdd_runner.rollout_buffer.add_observation({"obs": obs, "next_obs": next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})  
+                # 여기서 obs는 (n_agents, n_threads, obs_dim), next_obs는 (n_threads, n_agents, obs_dim), dones는 (n_threads, n_agents)
+            elif self.tdd_args["network"]["use_intra_obs"]:
+                self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, :4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :4], "dones": dones.transpose(1, 0)})
             else:
-                self.tdd_runner.rollout_buffer.add_observation({"obs": extracted_obs, "next_obs": extracted_next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})
+                self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, 2:4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, 2:4], "dones": dones.transpose(1, 0)})
             if np.any(np.all(dones, axis=1)):
                 self.tdd_runner.rollout_buffer.end_rollout()
         """ TDD update 끝 """
@@ -1119,9 +1132,12 @@ class OffPolicyBaseRunner:
             
             # intrinsic rewards 계산 (TDD가 있는 경우)
             if self.tdd_args is not None:
-                if self.tdd_args["network"]["use_central_SD"]:
-                    pos = eval_share_obs  # obs: (n_threads, n_agents, obs_dim)
-                    new_pos = next_eval_share_obs  # new_obs: (n_threads, n_agents, obs_dim)
+                if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                    pos = eval_obs  # obs: (n_threads, n_agents, obs_dim)
+                    new_pos = next_eval_obs  # new_obs: (n_threads, n_agents, obs_dim)
+                elif self.tdd_args["network"]["use_intra_obs"]:
+                    pos = eval_obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
+                    new_pos = next_eval_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
                 else:
                     pos = eval_obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
                     new_pos = next_eval_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
@@ -1146,14 +1162,15 @@ class OffPolicyBaseRunner:
                     rollout_data[eval_i][agent_id].append([xy_coords[0], xy_coords[1], cur_step])
 
             for agent_id in range(self.num_agents):
-                if self.tdd_args is not None and self.tdd_args["network"]["use_central_SD"]:
-                    temp_rollout_buffer[agent_id].append({"share_obs": eval_share_obs.transpose(1, 0, 2)[agent_id], "next_share_obs": next_eval_share_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                if self.tdd_args is not None and self.tdd_args["network"]["use_full_p_obs"]:
+                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                elif self.tdd_args["network"]["use_intra_obs"]:
+                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "dones": eval_dones.transpose(1, 0)[agent_id]})
                 else:
                     temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
             
             one_episode_len += 1
             eval_obs = next_eval_obs
-            eval_share_obs = next_eval_share_obs
             
             # 첫 5 steps이랑 롤아웃 길이의 5등분 지점에서 distance map 생성
             if self.tdd_args is not None:
@@ -1165,7 +1182,7 @@ class OffPolicyBaseRunner:
                             self.eval_envs.remotes[eval_i].send(("get_landmarks_and_obstacles", None))
                             landmarks, obstacles = self.eval_envs.remotes[eval_i].recv()
                             
-                            if self.tdd_args["network"]["use_central_SD"] or not self.tdd_args["logging"]["enable_graph_logging"]:
+                            if not self.tdd_args["logging"]["enable_graph_logging"]:
                                 pass
                             else:
                                 for agent_id in range(self.num_agents):

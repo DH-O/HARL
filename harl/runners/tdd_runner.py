@@ -34,11 +34,13 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         self.num_agents = num_agents
         self.observation_space = observation_space
         
-        if self.tdd_args["network"]["use_central_SD"]:
-            self.tdd_model = TDDModel(self.tdd_args, self.num_agents, self.num_agents * (2 + 2 + 2 * self.num_agents + 4 * (self.num_agents - 1)), self.device, run_dir=save_dir)
+        if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+            self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2 + 2 + 2 * self.num_agents + 4 * (self.num_agents - 1), self.device, run_dir=save_dir)
+        elif self.tdd_args["network"]["use_intra_obs"]:
+            self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 4, self.device, run_dir=save_dir)
         else:
             self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2, self.device, run_dir=save_dir)
-        
+
         self.max_historical_samples = self.tdd_args["train"]["max_historical_samples"]
         self.max_batch_size = self.tdd_args["train"]["max_batch_size"]
         self.default_k_value = self.tdd_args["train"]["default_k_value"]
@@ -91,22 +93,12 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         prev_states = []
         for i, state_dict in enumerate(current_rollout_states[agent_id]):
             if i == len(current_rollout_states[agent_id]) - 1:
-                if self.tdd_args["network"]["use_central_SD"]:
-                    prev_states.append(state_dict['share_obs'])
-                else:
-                    prev_states.append(state_dict['obs'])
+                prev_states.append(state_dict['obs'])
                 prev_states.append(pos[agent_id])
-                if self.tdd_args["network"]["use_central_SD"]:
-                    if not np.allclose(pos[agent_id], state_dict['next_share_obs'], rtol=1e-5, atol=1e-5):
-                        raise AssertionError(f"rollout_states의 마지막 상태의 next_share_obs({state_dict['next_share_obs']})가 현재 상태({pos[agent_id]})와 다른 경우입니다.")
-                else:
-                    if not np.allclose(pos[agent_id], state_dict['next_obs'], rtol=1e-5, atol=1e-5):
-                        raise AssertionError(f"rollout_states의 마지막 상태의 next_obs({state_dict['next_obs']})가 현재 상태({pos[agent_id]})와 다른 경우입니다.")
+                if not np.allclose(pos[agent_id], state_dict['next_obs'], rtol=1e-5, atol=1e-5):
+                    raise AssertionError(f"rollout_states의 마지막 상태의 next_obs({state_dict['next_obs']})가 현재 상태({pos[agent_id]})와 다른 경우입니다.")
             else:
-                if self.tdd_args["network"]["use_central_SD"]:
-                    prev_states.append(state_dict['share_obs'])
-                else:
-                    prev_states.append(state_dict['obs'])
+                prev_states.append(state_dict['obs'])
         return prev_states
 
     def compute_intrinsic_reward(self, pos, new_pos, is_eval=False, temp_rollout_buffer=None, n_rollout_threads=None):
@@ -397,7 +389,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         
         return entropy_term
     
-    def plot_distance_map(self, start_pos, map_size, agent_id, landmarks, obstacles, suffix=None, step=None):
+    def plot_distance_map(self, start_pos, map_size, agent_id, landmarks, obstacles, agents_input=None, suffix=None, step=None):
         """목표 지점으로부터의 거리를 시각화합니다.
         Args:
             start_pos: (tuple) 시작 위치 (x, y)
@@ -415,7 +407,10 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         positions = np.stack([X.flatten(), Y.flatten()], axis=1)    # 100x2 크기의 행렬로 변환
         
         # 목표 위치를 텐서로 변환
-        start_pos_tensor = torch.tensor(start_pos, device=self.device).float()  # (2,)
+        if agents_input is None:
+            start_input_tensor = torch.tensor(start_pos, device=self.device).float()  # torch.Size([2])
+        else:
+            start_input_tensor = torch.tensor(agents_input, device=self.device).float()  # torch.Size([obs_dim])
         
         # 배치 크기 설정 (더 작게 조정)
         batch_size = 100  # 한 번에 처리할 점의 수
@@ -430,15 +425,15 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 
                 # 현재 배치의 위치와 목표 위치를 인코딩
                 positions_tensor = torch.from_numpy(batch_positions).to(self.device).float()
-                start_pos_tensor_batch = start_pos_tensor.unsqueeze(0).repeat(len(batch_positions), 1)
+                start_input_tensor_batch = start_input_tensor.unsqueeze(0).repeat(len(batch_positions), 1)
                 
                 # 인코딩 수행
                 if self.tdd_args["network"]["use_independent_nets"]:
                     phi_g = self.tdd_model.s_encoder[agent_id](positions_tensor)    # (100, 32)
-                    phi_start = self.tdd_model.s_encoder[agent_id](start_pos_tensor_batch)    # (100, 32)
+                    phi_start = self.tdd_model.s_encoder[agent_id](start_input_tensor_batch)    # (100, 32)
                 else:
                     phi_g = self.tdd_model.s_encoder(positions_tensor)    # (100, 32)
-                    phi_start = self.tdd_model.s_encoder(start_pos_tensor_batch)    # (100, 32)
+                    phi_start = self.tdd_model.s_encoder(start_input_tensor_batch)    # (100, 32)
                 
                 batch_dists = mrn_distance(phi_start[:, None], phi_g[None, :])  #(100, 10)
                 dists[i:end_idx] = torch.diag(batch_dists).cpu().numpy().squeeze()
