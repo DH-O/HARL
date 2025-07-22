@@ -455,6 +455,9 @@ class OffPolicyBaseRunner:
                 elif self.tdd_args["network"]["use_intra_obs"]:
                     pos = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
                     new_pos = new_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
+                elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                    pos = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
+                    new_pos = new_obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # new_obs: (n_threads, n_agents, ?)
                 else:
                     pos = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
                     new_pos = new_obs[:, :, 2:4] # new_obs: (n_threads, n_agents, obs_dim)
@@ -847,6 +850,8 @@ class OffPolicyBaseRunner:
                 agents_input = obs  # (n_threads, n_agents, obs_dim)
             elif self.tdd_args["network"]["use_intra_obs"]:
                 agents_input = obs[:, :, :4] # (n_threads, n_agents, 4차원)
+            elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                agents_input = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # (n_threads, n_agents, ?)
             else:
                 # 에이전트의 위치만 추출 (x, y 좌표)
                 agents_input = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
@@ -867,10 +872,14 @@ class OffPolicyBaseRunner:
                             landmarks, obstacles = self.envs.remotes[thread_id].recv()
                             
                             # 현재 에이전트의 위치를 목표로 설정
-                            if not (self.tdd_args["network"]["use_full_p_obs"] or self.tdd_args["network"]["use_intra_obs"]):
-                                start_pos = agents_input[thread_id, agent_id, 2:4].copy()
-                            else:    
+                            if self.tdd_args["network"]["use_full_p_obs"]:
                                 start_pos = agents_input[thread_id, agent_id].copy()
+                            elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                                start_pos = agents_input[thread_id, agent_id, (2 + 2 + 2 * (self.num_agents))].copy()
+                            elif self.tdd_args["network"]["use_intra_obs"]:
+                                start_pos = agents_input[thread_id, agent_id, :4].copy()
+                            else:    
+                                start_pos = agents_input[thread_id, agent_id, 2:4].copy()
                             start_pos[0] = np.clip(start_pos[0] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                             start_pos[1] = np.clip(start_pos[1] + self.env_args["map_size"]/3 * i, -self.env_args["map_size"], self.env_args["map_size"])
                             # 거리 맵 생성
@@ -880,7 +889,7 @@ class OffPolicyBaseRunner:
                                 agent_id,
                                 landmarks, 
                                 obstacles,
-                                agents_input[thread_id, agent_id] if (self.tdd_args["network"]["use_full_p_obs"] or self.tdd_args["network"]["use_intra_obs"]) else None,
+                                agents_input[thread_id, agent_id] if (self.tdd_args["network"]["use_full_p_obs"] or self.tdd_args["network"]["use_intra_obs"] or self.tdd_args["network"]["use_p_obs_without_others"]) else None,
                                 f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]:.2f}_{start_pos[1]:.2f}",
                                 step=0
                             )
@@ -1003,6 +1012,8 @@ class OffPolicyBaseRunner:
                 # 여기서 obs는 (n_agents, n_threads, obs_dim), next_obs는 (n_threads, n_agents, obs_dim), dones는 (n_threads, n_agents)
             elif self.tdd_args["network"]["use_intra_obs"]:
                 self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, :4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :4], "dones": dones.transpose(1, 0)})
+            elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, :(2 + 2 + 2 * (self.num_agents))], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :(2 + 2 + 2 * (self.num_agents))], "dones": dones.transpose(1, 0)})
             else:
                 self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, 2:4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, 2:4], "dones": dones.transpose(1, 0)})
             if np.any(np.all(dones, axis=1)):
@@ -1138,6 +1149,9 @@ class OffPolicyBaseRunner:
                 elif self.tdd_args["network"]["use_intra_obs"]:
                     pos = eval_obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
                     new_pos = next_eval_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
+                elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                    pos = eval_obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
+                    new_pos = next_eval_obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # new_obs: (n_threads, n_agents, ?)
                 else:
                     pos = eval_obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
                     new_pos = next_eval_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
@@ -1166,6 +1180,8 @@ class OffPolicyBaseRunner:
                     temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
                 elif self.tdd_args["network"]["use_intra_obs"]:
                     temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :(2 + 2 + 2 * (self.num_agents))], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :(2 + 2 + 2 * (self.num_agents))], "dones": eval_dones.transpose(1, 0)[agent_id]})
                 else:
                     temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
             

@@ -13,7 +13,9 @@ network:
   # use full partial observation
   use_full_p_obs: False
   # use intra obs
-  use_intra_obs: True
+  use_intra_obs: False
+  # use partial obs without others
+  use_p_obs_without_others: True
 
 tdd:
   # discount factor

@@ -38,6 +38,8 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2 + 2 + 2 * self.num_agents + 4 * (self.num_agents - 1), self.device, run_dir=save_dir)
         elif self.tdd_args["network"]["use_intra_obs"]:
             self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 4, self.device, run_dir=save_dir)
+        elif self.tdd_args["network"]["use_p_obs_without_others"]:
+            self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2 + 2 + 2 * (self.num_agents), self.device, run_dir=save_dir)
         else:
             self.tdd_model = TDDModel(self.tdd_args, self.num_agents, 2, self.device, run_dir=save_dir)
 
