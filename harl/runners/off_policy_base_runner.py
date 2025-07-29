@@ -31,7 +31,7 @@ from harl.algorithms.critics import CRITIC_REGISTRY
 from harl.common.buffers.off_policy_buffer_ep import OffPolicyBufferEP
 from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
 """ TDD 관련 """
-from harl.runners.tdd_runner import TddRunner
+from harl.runners.DHO_runner import TddRunner, WM_Runner
 """ TDD 관련 끝 """
 
 def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size, step=None, warmup=False):
@@ -190,6 +190,8 @@ class OffPolicyBaseRunner:
         )
 
         self.action_spaces = self.envs.action_space
+        self.act_n_before = np.zeros((self.num_agents, self.n_rollout_threads, self.action_spaces[0].shape[0]))
+        
         for agent_id in range(self.num_agents):
             self.action_spaces[agent_id].seed(algo_args["seed"]["seed"] + agent_id + 1)
 
@@ -202,7 +204,10 @@ class OffPolicyBaseRunner:
         if self.tdd_args is not None and not self.algo_args["render"]["use_render"]:
             # TDD 로깅 설정 - save_dir 안에 로그 파일 생성
             self._setup_tdd_logging()
-            self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, self.save_dir)
+            self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, env_args, self.save_dir)
+        
+        if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
+            self.wm_runner = WM_Runner(self.envs.observation_space, self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
         """ TDD 관련 끝 """
         
         if self.share_param:
@@ -411,6 +416,7 @@ class OffPolicyBaseRunner:
         rollout_history_count = 0
         
         train_tdd_sac_flag = False if self.tdd_args is not None else True
+        episode_step = 0
         for step in range(1, steps + 1):
             actions = self.get_actions(
                 obs, available_actions=available_actions, add_random=True
@@ -493,7 +499,7 @@ class OffPolicyBaseRunner:
                 if len(np.array(available_actions).shape) == 3
                 else None,
             )
-            self.insert(data)   # 여기서 이제 롤아웃 버퍼도 야무지게 충전 중일 것이다.
+            episode_step = self.insert(data, episode_step)   # 롤아웃 버퍼도 충전
             
             obs = new_obs
             share_obs = new_share_obs
@@ -776,6 +782,8 @@ class OffPolicyBaseRunner:
             obs, share_obs, available_actions = self.envs.reset()
             # 궤적 기록용 변수
             rollout_data = {env_id: {agent_id: [] for agent_id in range(self.num_agents)} for env_id in range(n_rollout_threads)}
+            # wm 관련 변수
+            episode_step = 0
             
             for step in range(warmup_steps):
                 # action: (n_threads, n_agents, dim)
@@ -809,11 +817,11 @@ class OffPolicyBaseRunner:
                     if len(np.array(available_actions).shape) == 3
                     else None,
                 )
-                self.insert(data, True)
+                episode_step = self.insert(data, episode_step, True)
                 obs = new_obs
                 share_obs = new_share_obs
                 available_actions = new_available_actions
-            
+                
                 # 위치 기록
                 for env_id in range(n_rollout_threads):
                     for agent_id in range(self.num_agents):
@@ -842,6 +850,8 @@ class OffPolicyBaseRunner:
         
         """ TDD update """
         if self.tdd_args is not None:
+            if self.tdd_args["wm"]["use_wm"]:
+                self.wm_runner.train_wm(self.wm_runner.wm_buffer)
             # TDD 모델 업데이트
             self.tdd_runner.update_tdd_model(is_warm_up=True)
             # 환경 리셋
@@ -907,7 +917,7 @@ class OffPolicyBaseRunner:
                 os._exit(0)  # sys.exit(0) 대신 os._exit(0) 사용
         return obs, share_obs, available_actions
 
-    def insert(self, data, is_warmup=False):
+    def insert(self, data, episode_step, is_warmup=False):
         (
             share_obs,  # (n_threads, n_agents, share_obs_dim)
             obs,  # (n_agents, n_threads, obs_dim)
@@ -1007,19 +1017,43 @@ class OffPolicyBaseRunner:
         
         """ TDD update """
         if self.tdd_args is not None:
-            if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
-                self.tdd_runner.rollout_buffer.add_observation({"obs": obs, "next_obs": next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})  
-                # 여기서 obs는 (n_agents, n_threads, obs_dim), next_obs는 (n_threads, n_agents, obs_dim), dones는 (n_threads, n_agents)
-            elif self.tdd_args["network"]["use_intra_obs"]:
-                self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, :4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :4], "dones": dones.transpose(1, 0)})
-            elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, :(2 + 2 + 2 * (self.num_agents))], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :(2 + 2 + 2 * (self.num_agents))], "dones": dones.transpose(1, 0)})
-            else:
-                self.tdd_runner.rollout_buffer.add_observation({"obs": obs[:, :, 2:4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, 2:4], "dones": dones.transpose(1, 0)})
             if np.any(np.all(dones, axis=1)):
                 self.tdd_runner.rollout_buffer.end_rollout()
+                if self.tdd_args["wm"]["use_wm"]:
+                    if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                        self.wm_runner.wm_buffer.store_last_step(episode_step, obs, actions, self.n_rollout_threads)
+                    elif self.tdd_args["network"]["use_intra_obs"]:
+                        self.wm_runner.wm_buffer.store_last_step(episode_step, obs[:, :, :4], actions, self.n_rollout_threads)
+                    elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                        self.wm_runner.wm_buffer.store_last_step(episode_step, obs[:, :, :(2 + 2 + 2 * (self.num_agents))], actions, self.n_rollout_threads)
+                    else:
+                        self.wm_runner.wm_buffer.store_last_step(episode_step, obs[:, :, 2:4], actions, self.n_rollout_threads)
+                
+                episode_step = 0
+            else:
+                if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                    self.tdd_runner.rollout_buffer.add_data({"obs": obs, "next_obs": next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})  
+                    # 여기서 obs는 (n_agents, n_threads, obs_dim), next_obs는 (n_threads, n_agents, obs_dim), dones는 (n_threads, n_agents)
+                    if self.tdd_args["wm"]["use_wm"]:
+                        self.wm_runner.wm_buffer.store_transition(episode_step, obs, actions, self.n_rollout_threads)
+                elif self.tdd_args["network"]["use_intra_obs"]:
+                    self.tdd_runner.rollout_buffer.add_data({"obs": obs[:, :, :4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :4], "dones": dones.transpose(1, 0)})
+                    if self.tdd_args["wm"]["use_wm"]:
+                        self.wm_runner.wm_buffer.store_transition(episode_step, obs[:, :, :4], actions, self.n_rollout_threads)
+                elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                    self.tdd_runner.rollout_buffer.add_data({"obs": obs[:, :, :(2 + 2 + 2 * (self.num_agents))], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :(2 + 2 + 2 * (self.num_agents))], "dones": dones.transpose(1, 0)})
+                    if self.tdd_args["wm"]["use_wm"]:
+                        self.wm_runner.wm_buffer.store_transition(episode_step, obs[:, :, :(2 + 2 + 2 * (self.num_agents))], actions, self.n_rollout_threads)
+                else:
+                    self.tdd_runner.rollout_buffer.add_data({"obs": obs[:, :, 2:4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, 2:4], "dones": dones.transpose(1, 0)})
+                    if self.tdd_args["wm"]["use_wm"]:
+                        self.wm_runner.wm_buffer.store_transition(episode_step, obs[:, :, 2:4], actions, self.n_rollout_threads)
+                episode_step += 1
+            
+            return episode_step
         """ TDD update 끝 """
-
+        return episode_step
+    
     def sample_actions(self, available_actions=None):
         """Sample random actions for warmup.
         Args:

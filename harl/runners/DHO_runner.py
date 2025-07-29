@@ -1,7 +1,8 @@
 import torch
 import numpy as np
-from harl.common.buffers.tdd_rollout_buffer import RolloutBuffer
+from harl.common.buffers.tdd_rollout_buffer import RolloutBuffer, WM_RolloutBuffer
 from harl.algorithms.representation.tdd import TDDModel, mrn_distance
+from harl.algorithms.representation.wm import DreamerWorldModel
 import matplotlib
 matplotlib.use('Agg')  # Headless backend 설정
 import matplotlib.pyplot as plt
@@ -11,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
-    def __init__(self, n_rollout_threads, num_agents, observation_space, tdd_args=None, save_dir=None):
+    def __init__(self, n_rollout_threads, num_agents, observation_space, tdd_args=None, env_args=None, save_dir=None):
         if tdd_args is None:
             print("TDD is disabled")
             return
@@ -53,7 +54,7 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
         self.prev_obs = None
         
         self.rollout_buffer = RolloutBuffer(
-                {**self.tdd_args["network"], **self.tdd_args["train"], **self.tdd_args["tdd"]},
+                {**self.tdd_args, **env_args},
                 self.observation_space,
                 self.num_agents,
                 self.n_rollout_threads
@@ -484,3 +485,65 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
                 save_path = os.path.join(self.save_dir, f'distance_map_{time.strftime("%Y%m%d_%H%M%S")}_{suffix}.png')
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
+
+class WM_Runner:
+    def __init__(self, observation_space, action_spaces, algo_args, env_args, tdd_args):
+        self.algo_args = algo_args
+        self.env_args = env_args
+        self.tdd_args = tdd_args
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        self.wm_buffer = WM_RolloutBuffer(
+                {**self.tdd_args, **env_args},
+                observation_space,
+                action_spaces,
+                self.env_args["N"],
+                self.algo_args["train"]["n_rollout_threads"],
+                self.device
+        )
+        self.wm = DreamerWorldModel(observation_space, action_spaces, self.tdd_args["wm"])
+        self.wm.to(self.device)
+        self.target_wm = DreamerWorldModel(observation_space, action_spaces, self.tdd_args["wm"])
+        self.target_wm.to(self.device)
+        
+    def train_wm(self, rollout_buffer, soft_update=True):
+        batch, max_episode_len = rollout_buffer.sample(self.tdd_args["wm"]["batch_size"])
+        
+        batch_o = batch['obs_n'].to(self.device)    # shape: (batch_size, n_timesteps + 1, n_agents, obs_dim)
+        batch_a_before = batch['a_n_before'].to(self.device)
+        batch_active = batch['active'].to(self.device)  # shape: (batch_size, n_timesteps, 1)
+        
+        batch_size, n_timesteps_plus_1, n_agents, obs_dim = batch_o.shape
+        
+        is_first = torch.zeros(batch_size, n_timesteps_plus_1, n_agents, device=self.device)  # shape: (batch_size, n_timesteps + 1, n_agents)
+        is_first[:, 0, :] = 1.0
+        
+        batch_o = batch_o.permute(0, 2, 1, 3).reshape(-1, n_timesteps_plus_1, batch_o.shape[-1])    # shape: (batch_size * n_agents, n_timesteps + 1, obs_dim)
+        batch_a_before = batch_a_before.permute(0, 2, 1, 3).reshape(-1, n_timesteps_plus_1, batch_a_before.shape[-1])
+        is_first = is_first.permute(0, 2, 1).reshape(-1, n_timesteps_plus_1)   # shape: (batch_size * n_agents, n_timesteps + 1)
+        
+        batch_active = batch_active.expand(-1, -1, n_agents)  # shape: (batch_size, n_timesteps, n_agents)
+        batch_active = torch.cat([batch_active, batch_active[:, -1:, :]], dim=1)  # shape: (batch_size, n_timesteps + 1, n_agents)
+        
+        wm_data_dict = {
+            'vector_obs': batch_o,
+            'action': batch_a_before,
+            'is_first': is_first,
+            'mask': batch_active.permute(0, 2, 1).reshape(-1, n_timesteps_plus_1)
+        }
+        
+        _, _, metrics = self.wm._train(wm_data_dict)
+        
+        metrics = {f'wm/{k}':np.mean(v) for k,v in metrics.items()}
+        
+        if soft_update:
+            self.soft_update_params(self.wm, self.target_wm, self.tdd_args["wm"]["dyna_tau"])
+        else:
+            self.target_wm.load_state_dict(self.wm.state_dict())
+            
+        return metrics
+
+    def soft_update_params(self, net, target_net, tau):
+            for param, target_param in zip(net.parameters(), target_net.parameters()):
+                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)

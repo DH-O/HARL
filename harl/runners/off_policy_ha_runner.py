@@ -3,8 +3,6 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from harl.runners.off_policy_base_runner import OffPolicyBaseRunner
-from harl.runners.tdd_runner import TddRunner
-
 
 class OffPolicyHARunner(OffPolicyBaseRunner):
     """Runner for off-policy HA algorithms."""

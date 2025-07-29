@@ -11,11 +11,11 @@ network:
   # use independent nets
   use_independent_nets: True
   # use full partial observation
-  use_full_p_obs: False
+  use_full_p_obs: True
   # use intra obs
   use_intra_obs: False
   # use partial obs without others
-  use_p_obs_without_others: True
+  use_p_obs_without_others: False
 
 tdd:
   # discount factor
@@ -76,3 +76,55 @@ logging:
   enable_graph_logging: False
   # turn on/off logger logging
   enable_logger_logging: False
+
+wm:
+  # use wm
+  use_wm: True
+  batch_size: 32
+  buffer_size: 5000
+
+  # 모델 파라미터
+  dyn_stoch: 16
+  dyn_deter: 128
+  dyn_hidden: 128
+  dyn_rec_depth: 1
+  dyn_discrete: False  # 이게 16이면 더 풍부한 표현력을 가지게 된다는데 잘 모르겠다. dist = torchd.independent... OneHot이라는데 그게 진짜 좋으려나?
+  act: SiLU
+  norm: True
+  dyn_mean_act: "none"
+  dyn_std_act: sigmoid2
+  dyn_min_std: 0.1
+  unimix_ratio: 0.01
+  initial: zeros
+  precision: 32 # 모델의 계산 정밀도를 설정. 16이면 FP16으로써 메모리가 절약되고 속도가 향상된다.
+  
+  grad_heads: ['decoder']
+  decode_role: False
+  model_lr: 0.0001
+  opt_eps: 1e-8
+  grad_clip: 1000
+  weight_decay: 0.0
+  opt: adam
+  
+  kl_free: 1.0
+  dyn_scale: 0.5
+  rep_scale: 0.1
+
+  dyna_tau: 0.005
+
+  encoder:
+    act: SiLU
+    mlp_keys: vector_obs
+    mlp_layers: 2
+    mlp_units: 128
+    norm: True
+    symlog_inputs: True
+  
+  decoder:
+    act: SiLU
+    mlp_keys: vector_obs
+    mlp_layers: 2
+    mlp_units: 128
+    norm: True
+    outscale: 1.0
+    vector_dist: symlog_mse
