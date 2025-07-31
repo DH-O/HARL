@@ -134,24 +134,13 @@ class RSSM(nn.Module):
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
         # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
-        if role_embed is not None:
-            role_embed = swap(role_embed)
-            # prev_state[0] means selecting posterior of return(posterior, prior) from obs_step
-            post, prior = tools.static_scan(
-                lambda prev_state, prev_act, embed, is_first, role_embed: self.obs_step(
-                    prev_state[0], prev_act, embed, is_first, role_embed
-                ),
-                (action, embed, is_first, role_embed),
-                (state, state),
-            )
-        else:
-            post, prior = tools.static_scan(
-                lambda prev_state, prev_act, embed, is_first: self.obs_step(
-                    prev_state[0], prev_act, embed, is_first
-                ),
-                (action, embed, is_first),
-                (state, state),
-            )
+        post, prior = tools.static_scan(
+            lambda prev_state, prev_act, embed, is_first: self.obs_step(
+                prev_state[0], prev_act, embed, is_first
+            ),
+            (action, embed, is_first),
+            (state, state),
+        )
 
         # (batch, time, stoch, discrete_num) -> (batch, time, stoch, discrete_num)
         post = {k: swap(v) for k, v in post.items()}

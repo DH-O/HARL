@@ -85,8 +85,8 @@ class DreamerWorldModel(nn.Module):
                     """ 인코더 통해서 임베딩을 뽑는데 구성이 어떻게 되려나? """
                     embed = self.encoder(data)  # embed의 shape은 (batch_size, max_episode_length, embed_size) 이런식으로 될거다.
                     # TODO : Include role information
-                    role_embed_dyn = None if (self.role_config is None or not self._config["rssm_role"]) else data['role_embed']
-                    role_embed_dec = None if (self.role_config is None or not self._config["decode_role"]) else data['role_embed']
+                    role_embed_dyn = None 
+                    role_embed_dec = None
                     
                     """ rssm 네트워크 불러와서 .observe하는데 """
                     post, prior = self.dynamics.observe(
@@ -127,13 +127,13 @@ class DreamerWorldModel(nn.Module):
                     model_loss = sum(scaled.values()) + kl_loss
                     model_loss = model_loss * data["mask"]
             else:
-                """ 인코더 통해서 임베딩을 뽑는데 구성이 어떻게 되려나? """
+                """ 인코더 통해서 임베딩을 뽑음 """
                 embed = self.encoder(data)  # embed의 shape은 (batch_size, max_episode_length, embed_size) 이런식으로 될거다.
                 # TODO : Include role information
                 role_embed_dyn = None 
                 role_embed_dec = None
                 
-                """ rssm 네트워크 불러와서 .observe하는데 """
+                """ rssm 네트워크 불러와서 .observe하는데, 이게 imagine step """
                 post, prior = self.dynamics.observe(
                     embed, data["action"], data["is_first"], role_embed_dyn
                 )
@@ -152,14 +152,13 @@ class DreamerWorldModel(nn.Module):
                 for name, head in self.heads.items():
                     grad_head = name in self._config["grad_heads"]
                     feat = self.dynamics.get_feat(post) # [h_t, z_t]
-                    if self._config["decode_role"]:
-                        feat = torch.cat([feat, role_embed_dec.detach()], dim=-1) if role_embed_dec is not None else feat
                     feat = feat if grad_head else feat.detach()
                     pred = head(feat)   # p_phi(x^hat_t | h_t, z_t)
                     if type(pred) is dict:
                         preds.update(pred)
                     else:
                         preds[name] = pred
+                """ 아래가 recon_loss 계산 """
                 losses = {}
                 for name, pred in preds.items():
                     loss = -pred.log_prob(data[name])
