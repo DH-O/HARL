@@ -850,29 +850,30 @@ class OffPolicyBaseRunner:
         
         """ TDD update """
         if self.tdd_args is not None:
-            if self.tdd_args["wm"]["use_wm"]:
-                self.wm_runner.train_wm(self.wm_runner.wm_buffer)
             # TDD 모델 업데이트
             self.tdd_runner.update_tdd_model(is_warm_up=True)
-            # 환경 리셋
-            obs, _, _ = self.envs.reset()
-            if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
-                agents_input = obs  # (n_threads, n_agents, obs_dim)
-            elif self.tdd_args["network"]["use_intra_obs"]:
-                agents_input = obs[:, :, :4] # (n_threads, n_agents, 4차원)
-            elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                agents_input = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # (n_threads, n_agents, ?)
-            else:
-                # 에이전트의 위치만 추출 (x, y 좌표)
-                agents_input = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
+            if self.tdd_args["wm"]["use_wm"]:
+                self.wm_runner.train_wm(self.wm_runner.wm_buffer)
+            
             # 각 환경과 에이전트별로 거리 맵 생성 (최적화: 샘플링으로 줄임)
             if not self.tdd_args["logging"]["enable_graph_logging"]:
                 pass
             else:
-                # 샘플링: 전체 환경과 에이전트 중 일부만 선택
-                sample_threads = min(2, self.n_rollout_threads)  # 최대 2개 환경만
-                sample_agents = self.num_agents  # 모든 에이전트 유지
-                sample_positions = 3  # 위치 변화도 3개만
+                # 환경 리셋
+                obs, _, _ = self.envs.reset()
+                if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
+                    agents_input = obs  # (n_threads, n_agents, obs_dim)
+                elif self.tdd_args["network"]["use_intra_obs"]:
+                    agents_input = obs[:, :, :4] # (n_threads, n_agents, 4차원)
+                elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                    agents_input = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # (n_threads, n_agents, ?)
+                else:
+                    # 에이전트의 위치만 추출 (x, y 좌표)
+                    agents_input = obs[:, :, 2:4]  # (n_threads, n_agents, 2)
+                    # 샘플링: 전체 환경과 에이전트 중 일부만 선택
+                    sample_threads = min(2, self.n_rollout_threads)  # 최대 2개 환경만
+                    sample_agents = self.num_agents  # 모든 에이전트 유지
+                    sample_positions = 3  # 위치 변화도 3개만
                 
                 for i in range(sample_positions):
                     for thread_id in range(sample_threads):
@@ -903,9 +904,10 @@ class OffPolicyBaseRunner:
                                 f"thread_{thread_id}_agent_{agent_id}_start_pos_ith_{i}_{start_pos[0]:.2f}_{start_pos[1]:.2f}",
                                 step=0
                             )
+                print("Representation learning 완료. 거리 맵이 생성되었습니다.")
             
             self.tdd_runner.rollout_buffer.clear()
-            print("Representation learning 완료. 거리 맵이 생성되었습니다.")
+            
         """ TDD update 끝 """
         if self.tdd_args is not None:
             if self.tdd_args["train"]["use_synthetic_data"]:
