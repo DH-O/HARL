@@ -76,10 +76,16 @@ logging:
   enable_graph_logging: False
   # turn on/off logger logging
   enable_logger_logging: False
+  # tb_plot logging
+  tb_plot: True
+  # wandb logging
+  wandb: False
 
 wm:
   # use wm
   use_wm: True
+  # number of wm updates
+  n_wm_updates: 120
   batch_size: 32
   buffer_size: 5000
 

@@ -7,7 +7,7 @@ from harl.utils.models_tools import RequiresGrad, WM_Optimizer
 
 to_np = lambda x: x.detach().cpu().numpy()
 class DreamerWorldModel(nn.Module):
-    def __init__(self, obs_space, action_spaces, config):
+    def __init__(self, obs_dim, action_spaces, config):
         super(DreamerWorldModel, self).__init__()
         self._use_amp = True if config["precision"] == 16 else False
         self._config = config
@@ -15,8 +15,7 @@ class DreamerWorldModel(nn.Module):
         self.action_spaces = action_spaces
         act_shape_for_net = action_spaces[0].shape[0]
         
-        shapes = obs_space
-        shapes_for_net = {'vector_obs': [shapes[0].shape[0]]}
+        shapes_for_net = {'vector_obs': [obs_dim]}
         self.encoder = MultiEncoder(shapes_for_net, **config["encoder"])
         self.embed_size = self.encoder.outdim
         
@@ -127,7 +126,10 @@ class DreamerWorldModel(nn.Module):
                     model_loss = sum(scaled.values()) + kl_loss
                     model_loss = model_loss * data["mask"]
             else:
-                """ 인코더 통해서 임베딩을 뽑음 """
+                """ 인코더 통해서 임베딩을 뽑음 """ 
+                # data는 딕셔너리며, {'vector_obs': (batch_size, max_episode_length + 1, obs_dim), 
+                # 'action': (batch_size, max_episode_length + 1, act_dim), 'is_first': (batch_size, max_episode_length + 1), 
+                # 'mask': (batch_size, max_episode_length + 1)} 이런식으로 되어있다.
                 embed = self.encoder(data)  # embed의 shape은 (batch_size, max_episode_length, embed_size) 이런식으로 될거다.
                 # TODO : Include role information
                 role_embed_dyn = None 
@@ -138,8 +140,8 @@ class DreamerWorldModel(nn.Module):
                     embed, data["action"], data["is_first"], role_embed_dyn
                 )
                 kl_free = self._config["kl_free"]
-                dyn_scale = self._config["dyn_scale"]
-                rep_scale = self._config["rep_scale"]
+                dyn_scale = self._config["dyn_scale"]   # 0.5
+                rep_scale = self._config["rep_scale"]   # 0.1
                 
                 """ 다이나믹스 모델 학습을 위한 kl_loss 계산 """
                 kl_loss, kl_value, dyn_loss, rep_loss = self.dynamics.kl_loss(
@@ -216,7 +218,8 @@ class DreamerWorldModel(nn.Module):
         # We dont have images
         obs = {k: torch.Tensor(v).to(self.device) for k, v in obs.items()}
         return obs
-
+    
+    """ 아래 주석들은 추후 사용할 수도 있음 """
     # def predict_test(self, data):
     #     data = self.preprocess(data)
     #     embed = self.encoder(data)

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from harl.common.buffers.tdd_rollout_buffer import RolloutBuffer, WM_RolloutBuffer
+from harl.common.buffers.DHO_rollout_buffer import RolloutBuffer, WM_RolloutBuffer
 from harl.algorithms.representation.tdd import TDDModel, mrn_distance
 from harl.algorithms.representation.wm import DreamerWorldModel
 import matplotlib
@@ -487,25 +487,33 @@ class TddRunner:  # tdd_args가 none이 아닐때만 호출 됨
             plt.close()
 
 class WM_Runner:
-    def __init__(self, observation_space, action_spaces, algo_args, env_args, tdd_args):
+    def __init__(self, obs_dim, action_spaces, algo_args, env_args, tdd_args):
         self.algo_args = algo_args
         self.env_args = env_args
         self.tdd_args = tdd_args
+        self.num_agents = env_args["N"]
+        self.max_episode_len = env_args["max_cycles"]
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         self.wm_buffer = WM_RolloutBuffer(
                 {**self.tdd_args, **env_args},
-                observation_space,
+                obs_dim,
                 action_spaces,
                 self.env_args["N"],
                 self.algo_args["train"]["n_rollout_threads"],
                 self.device
         )
-        self.wm = DreamerWorldModel(observation_space, action_spaces, self.tdd_args["wm"])
-        self.wm.to(self.device)
-        self.target_wm = DreamerWorldModel(observation_space, action_spaces, self.tdd_args["wm"])
-        self.target_wm.to(self.device)
+        self.wm_ls = [
+            DreamerWorldModel(obs_dim, action_spaces, self.tdd_args["wm"]).to(self.device) for _ in range(self.num_agents)
+        ]
+        self.target_wm_ls = [
+            DreamerWorldModel(obs_dim, action_spaces, self.tdd_args["wm"]).to(self.device) for _ in range(self.num_agents)
+        ]
+        
+        # 상태 저장을 위한 변수들 추가
+        self.prev_states = [None for _ in range(self.num_agents)]  # 각 에이전트별 이전 상태 저장
+        self.episode_step = 0  # 현재 에피소드 스텝
         
     def train_wm(self, rollout_buffer, soft_update=True):
         batch, max_episode_len = rollout_buffer.sample(self.tdd_args["wm"]["batch_size"])
@@ -519,31 +527,279 @@ class WM_Runner:
         is_first = torch.zeros(batch_size, n_timesteps_plus_1, n_agents, device=self.device)  # shape: (batch_size, n_timesteps + 1, n_agents)
         is_first[:, 0, :] = 1.0
         
-        batch_o = batch_o.permute(0, 2, 1, 3).reshape(-1, n_timesteps_plus_1, batch_o.shape[-1])    # shape: (batch_size * n_agents, n_timesteps + 1, obs_dim)
-        batch_a_before = batch_a_before.permute(0, 2, 1, 3).reshape(-1, n_timesteps_plus_1, batch_a_before.shape[-1])
-        is_first = is_first.permute(0, 2, 1).reshape(-1, n_timesteps_plus_1)   # shape: (batch_size * n_agents, n_timesteps + 1)
+        batch_o = batch_o.permute(0, 2, 1, 3) # shape: (batch_size, n_agents, n_timesteps + 1, obs_dim)
+        batch_a_before = batch_a_before.permute(0, 2, 1, 3) # shape: (batch_size, n_agents, n_timesteps + 1, action_dim)
+        is_first = is_first.permute(0, 2, 1)   # shape: (batch_size, n_agents, n_timesteps + 1)
         
         batch_active = batch_active.expand(-1, -1, n_agents)  # shape: (batch_size, n_timesteps, n_agents)
         batch_active = torch.cat([batch_active, batch_active[:, -1:, :]], dim=1)  # shape: (batch_size, n_timesteps + 1, n_agents)
         
-        wm_data_dict = {
-            'vector_obs': batch_o,
-            'action': batch_a_before,
-            'is_first': is_first,
-            'mask': batch_active.permute(0, 2, 1).reshape(-1, n_timesteps_plus_1)
-        }
-        
-        _, _, metrics = self.wm._train(wm_data_dict)
-        
-        metrics = {f'wm/{k}':np.mean(v) for k,v in metrics.items()}
+        metrics_ls = []
+        for agent_id in range(self.num_agents):
+            wm_data_dict = {
+                'vector_obs': batch_o[:, agent_id, :, :],
+                'action': batch_a_before[:, agent_id, :, :],
+                'is_first': is_first[:, agent_id, :],
+                'mask': batch_active[:, :, agent_id] # shape: (batch_size, n_timesteps + 1)
+            }
+            _, _, metrics = self.wm_ls[agent_id]._train(wm_data_dict)
+            metrics = {f'wm/{k}':np.mean(v) for k,v in metrics.items()}
+            metrics_ls.append(metrics)
         
         if soft_update:
-            self.soft_update_params(self.wm, self.target_wm, self.tdd_args["wm"]["dyna_tau"])
+            for agent_id in range(self.num_agents):
+                self.soft_update_params(self.wm_ls[agent_id], self.target_wm_ls[agent_id], self.tdd_args["wm"]["dyna_tau"])
         else:
-            self.target_wm.load_state_dict(self.wm.state_dict())
+            for agent_id in range(self.num_agents):
+                self.target_wm_ls[agent_id].load_state_dict(self.wm_ls[agent_id].state_dict())
             
-        return metrics
+        return metrics_ls
 
     def soft_update_params(self, net, target_net, tau):
             for param, target_param in zip(net.parameters(), target_net.parameters()):
                 target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+    
+    def reset_episode_states(self):
+        """에피소드 종료 시 상태 초기화"""
+        self.prev_states = [None for _ in range(self.num_agents)]
+        self.episode_step = 0
+    
+    def compute_wm_int_rew(self, obs, new_obs, is_eval=False, temp_wm_buffer=None, n_rollout_threads=None, step=None):
+        """World Model 기반 intrinsic reward 계산 - 단일 스텝 처리 방식
+        
+        Args:
+            obs: 현재 관찰 (n_rollout_threads, n_agents, obs_dim)
+            new_obs: 새로운 관찰 (n_rollout_threads, n_agents, obs_dim)
+            is_eval: 평가 모드 여부
+            temp_wm_buffer: 임시 WM 버퍼
+            n_rollout_threads: 롤아웃 스레드 수
+            step: 현재 스텝 (로깅용)
+            
+        Returns:
+            intrinsic_rewards: (n_rollout_threads, n_agents, 1) 형태의 intrinsic rewards
+        """
+        step %= self.max_episode_len
+        
+        # 에피소드 시작 시 상태 초기화
+        if step == 0:
+            self.prev_states = [None for _ in range(self.num_agents)]
+            self.episode_step = 0
+        
+        # WM 버퍼에서 현재까지의 시퀀스 가져오기
+        if temp_wm_buffer is None:
+            # WM_RolloutBuffer에서 현재 에피소드 데이터 가져오기
+            current_episode_data = self.wm_buffer.current_buffer
+        else:
+            current_episode_data = temp_wm_buffer
+        
+        if current_episode_data is None:
+            # 버퍼가 비어있으면 기본값 반환
+            return np.zeros((n_rollout_threads, self.num_agents, 1))
+        
+        with torch.no_grad():
+            agent_obs = current_episode_data['obs_n'][:, :, :, :]  # (n_rollout_threads, n_timesteps, n_agents, obs_dim)
+            agent_actions = current_episode_data['a_n_before'][:, :, :, :]  # (n_rollout_threads, n_timesteps, n_agents, action_dim)
+            
+            # 현재 스텝의 데이터 업데이트
+            if step == 0:
+                agent_obs[:, step, :, :] = obs
+                agent_obs[:, step + 1, :, :] = new_obs
+            elif step > 0:
+                if not (agent_obs[:, step, :, :] == obs).all():
+                    raise ValueError(f"step({step})에서 obs와 agent_obs[:, step, :, :]가 다릅니다.")
+                agent_obs[:, step + 1, :, :] = new_obs
+            else:
+                raise ValueError(f"step({step})이 0 미만입니다.")
+            
+            # 기존 방식과 새로운 방식의 결과를 비교하기 위한 변수들
+            old_post_results = []
+            old_prior_results = []
+            new_post_results = []
+            new_prior_results = []
+            old_kl_losses = []
+            new_kl_losses = []
+            
+            # 기존 방식 (전체 시퀀스 처리)
+            threads_o = torch.tensor(agent_obs, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, obs_dim)
+            threads_a_before = torch.tensor(agent_actions, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, action_dim)
+            
+            threads_is_first = torch.zeros((n_rollout_threads, self.max_episode_len + 1, self.num_agents), device=self.device, dtype=torch.float32)
+            threads_is_first[:, 0, :] = 1.0
+            threads_is_first = threads_is_first.permute(0, 2, 1) # shape: (n_rollout_threads, n_agents, n_timesteps + 1)
+            
+            # 새로운 방식 (단일 스텝 처리)
+            current_obs = torch.tensor(agent_obs[:, step + 1, :, :], device=self.device, dtype=torch.float32)  # (n_rollout_threads, n_agents, obs_dim)
+            current_action = torch.tensor(agent_actions[:, step, :, :], device=self.device, dtype=torch.float32)  # (n_rollout_threads, n_agents, action_dim)
+            
+            # is_first 플래그 설정 (에피소드 시작 시에만 True)
+            is_first = torch.zeros((n_rollout_threads, self.num_agents), device=self.device, dtype=torch.float32)
+            if step == 0:
+                is_first[:, :] = 1.0
+            
+            int_rew = []
+            for agent_id in range(self.num_agents):
+                # === 기존 방식 (전체 시퀀스 처리) ===
+                wm_data_dict_old = {
+                    'vector_obs': threads_o[:, agent_id, :, :],
+                    'action': threads_a_before[:, agent_id, :, :],
+                    'is_first': threads_is_first[:, agent_id, :]
+                }
+                
+                embed_old = self.wm_ls[agent_id].encoder(wm_data_dict_old)  # embed의 shape: (n_rollout_threads, n_timesteps + 1, embed_size)
+                # RSSM observe를 통한 prior와 posterior 계산 (현재까지의 시퀀스)
+                post_old, prior_old = self.wm_ls[agent_id].dynamics.observe(
+                    embed_old, 
+                    threads_a_before[:, agent_id, :(step + 2), :], 
+                    threads_is_first[:, agent_id, :(step + 2)]
+                )
+                
+                # 기존 방식의 KL loss 계산 (비교용)
+                kl_loss_old, kl_value_old, dyn_loss_old, rep_loss_old = self.wm_ls[agent_id].dynamics.kl_loss(
+                    post_old, prior_old, kl_free, dyn_scale, rep_scale
+                )
+                
+                # === 새로운 방식 (단일 스텝 처리) ===
+                agent_obs_step = current_obs[:, agent_id, :]  # (n_rollout_threads, obs_dim)
+                agent_action_step = current_action[:, agent_id, :]  # (n_rollout_threads, action_dim)
+                agent_is_first = is_first[:, agent_id]  # (n_rollout_threads,)
+                
+                # 인코더를 통한 임베딩 생성
+                wm_data_dict_new = {
+                    'vector_obs': agent_obs_step.unsqueeze(1),  # (n_rollout_threads, 1, obs_dim)
+                    'action': agent_action_step.unsqueeze(1),    # (n_rollout_threads, 1, action_dim)
+                    'is_first': agent_is_first.unsqueeze(1),    # (n_rollout_threads, 1)
+                }
+                
+                embed_new = self.wm_ls[agent_id].encoder(wm_data_dict_new)  # (n_rollout_threads, 1, embed_size)
+                embed_new = embed_new.squeeze(1)  # (n_rollout_threads, embed_size)
+                
+                # 단일 스텝 observe 처리
+                post_new, prior_new = self.wm_ls[agent_id].dynamics.observe_step(
+                    self.prev_states[agent_id],  # 이전 상태
+                    embed_new,                   # 현재 임베딩
+                    agent_action_step,           # 현재 액션
+                    agent_is_first,              # is_first 플래그
+                )
+                
+                # 결과 비교 및 저장
+                old_post_results.append(post_old)
+                old_prior_results.append(prior_old)
+                new_post_results.append(post_new)
+                new_prior_results.append(prior_new)
+                old_kl_losses.append(kl_loss_old)
+                new_kl_losses.append(kl_loss)
+                
+                # KL loss 계산 (새로운 방식 사용)
+                kl_free = self.tdd_args["wm"]["kl_free"]
+                dyn_scale = self.tdd_args["wm"]["dyn_scale"]
+                rep_scale = self.tdd_args["wm"]["rep_scale"]
+                
+                kl_loss, kl_value, dyn_loss, rep_loss = self.wm_ls[agent_id].dynamics.kl_loss(
+                    post_new, prior_new, kl_free, dyn_scale, rep_scale
+                )
+                
+                # intrinsic reward는 각 스레드별 KL loss (평균 내지 않음)
+                # kl_loss shape: (n_rollout_threads,) - 각 스레드별 개별 KL loss
+                if agent_id == 0:
+                    int_rew = kl_loss.unsqueeze(1)  # (n_rollout_threads, 1)
+                else:
+                    int_rew = torch.cat([int_rew, kl_loss.unsqueeze(1)], dim=1)  # (n_rollout_threads, n_agents)
+                
+                # 다음 스텝을 위해 현재 상태 저장
+                self.prev_states[agent_id] = post_new
+            
+            # 최종 차원을 (n_rollout_threads, n_agents, 1)로 맞춤
+            int_rew = int_rew.unsqueeze(-1)  # (n_rollout_threads, n_agents, 1)
+            
+            # === 결과 비교 ===
+            if step % 1 == 0:  # 100 스텝마다 비교 (성능상의 이유로)
+                self._compare_results(old_post_results, old_prior_results, 
+                                   new_post_results, new_prior_results, 
+                                   old_kl_losses, new_kl_losses, step)
+        
+        # 로깅 (선택적)
+        if step is not None and step % 1000 == 0:
+            if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_logger_logging"]:
+                avg_reward = np.mean(int_rew.cpu().numpy())
+                logger.info(f"Step {step}: WM Intrinsic Reward = {avg_reward:.4f}, "
+                          f"Agents = {self.num_agents}, Threads = {n_rollout_threads}")
+        
+        return np.array(int_rew.cpu().numpy())
+    
+    def _compare_results(self, old_post_results, old_prior_results, new_post_results, new_prior_results, old_kl_losses, new_kl_losses, step):
+        """기존 방식과 새로운 방식의 결과를 비교합니다."""
+        try:
+            for agent_id in range(self.num_agents):
+                old_post = old_post_results[agent_id]
+                old_prior = old_prior_results[agent_id]
+                new_post = new_post_results[agent_id]
+                new_prior = new_prior_results[agent_id]
+                old_kl_loss = old_kl_losses[agent_id]
+                new_kl_loss = new_kl_losses[agent_id]
+                
+                # KL loss 비교
+                if len(old_kl_loss.shape) > 1:
+                    old_kl_last = old_kl_loss[:, -1]  # 마지막 타임스텝
+                else:
+                    old_kl_last = old_kl_loss
+                
+                kl_diff = torch.abs(old_kl_last - new_kl_loss).max().item()
+                if kl_diff > 1e-6:
+                    logger.warning(f"Step {step}, Agent {agent_id}, KL Loss: "
+                                 f"Difference = {kl_diff:.8f}")
+                    logger.warning(f"  Old KL shape: {old_kl_loss.shape}, New KL shape: {new_kl_loss.shape}")
+                    logger.warning(f"  Old KL last step: {old_kl_last[:3]}")
+                    logger.warning(f"  New KL values: {new_kl_loss[:3]}")
+                else:
+                    logger.info(f"Step {step}, Agent {agent_id}, KL Loss: "
+                              f"Results match (diff = {kl_diff:.8f})")
+                
+                # 각 키에 대해 비교
+                for key in old_post.keys():
+                    if key in new_post:
+                        old_val = old_post[key]
+                        new_val = new_post[key]
+                        
+                        # 마지막 타임스텝만 비교 (새로운 방식은 단일 스텝이므로)
+                        if len(old_val.shape) > 1:
+                            old_val_last = old_val[:, -1]  # 마지막 타임스텝
+                        else:
+                            old_val_last = old_val
+                        
+                        # 차이 계산
+                        diff = torch.abs(old_val_last - new_val).max().item()
+                        
+                        if diff > 1e-6:  # 허용 오차
+                            logger.warning(f"Step {step}, Agent {agent_id}, Key '{key}': "
+                                         f"Difference = {diff:.8f}")
+                            logger.warning(f"  Old shape: {old_val.shape}, New shape: {new_val.shape}")
+                            logger.warning(f"  Old last step: {old_val_last[:3]}")  # 처음 3개 값만 출력
+                            logger.warning(f"  New values: {new_val[:3]}")
+                        else:
+                            logger.info(f"Step {step}, Agent {agent_id}, Key '{key}': "
+                                      f"Results match (diff = {diff:.8f})")
+                
+                # prior도 비교
+                for key in old_prior.keys():
+                    if key in new_prior:
+                        old_val = old_prior[key]
+                        new_val = new_prior[key]
+                        
+                        if len(old_val.shape) > 1:
+                            old_val_last = old_val[:, -1]
+                        else:
+                            old_val_last = old_val
+                        
+                        diff = torch.abs(old_val_last - new_val).max().item()
+                        
+                        if diff > 1e-6:
+                            logger.warning(f"Step {step}, Agent {agent_id}, Prior '{key}': "
+                                         f"Difference = {diff:.8f}")
+                        else:
+                            logger.info(f"Step {step}, Agent {agent_id}, Prior '{key}': "
+                                      f"Results match (diff = {diff:.8f})")
+                            
+        except Exception as e:
+            logger.error(f"Error during result comparison: {e}")
+            import traceback
+            traceback.print_exc()

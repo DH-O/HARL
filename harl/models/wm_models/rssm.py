@@ -126,6 +126,23 @@ class RSSM(nn.Module):
         else:
             raise NotImplementedError(self._initial)
 
+    def observe_step(self, prev_state, embed, action, is_first, role_embed=None, sample=True):
+        """단일 스텝 observe 처리 - 이전 상태를 받아서 새로운 상태를 반환"""
+        if not self.role_config and role_embed is not None:
+            raise ValueError("Role embedding is not configured.")
+        
+        # 이전 상태가 없으면 초기화
+        if prev_state is None:
+            prev_state = self.initial(embed.shape[0])
+            prev_action = torch.zeros((embed.shape[0], self._num_actions)).to(self._device)
+        else:
+            prev_action = action
+        
+        # obs_step을 직접 호출하여 단일 스텝 처리
+        post, prior = self.obs_step(prev_state, prev_action, embed, is_first, role_embed, sample)
+        
+        return post, prior
+
     def observe(self, embed, action, is_first, role_embed = None, state=None):
         if not self.role_config and role_embed is not None:
             raise ValueError("Role embedding is not configured.")
@@ -140,24 +157,25 @@ class RSSM(nn.Module):
             ),
             (action, embed, is_first),
             (state, state),
-        )
+        )   # static_scan은 모든 시간 스텝에 대해서 함수를 적용하고, 결과를 반환한다.
 
         # (batch, time, stoch, discrete_num) -> (batch, time, stoch, discrete_num)
         post = {k: swap(v) for k, v in post.items()}
         prior = {k: swap(v) for k, v in prior.items()}
         return post, prior
 
-    def imagine_with_action(self, action, state, role_embed = None):
-        assert role_embed is not None if self.role_config is not None else True
-        swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-        assert isinstance(state, dict), state
-        action = swap(action)
-        if role_embed is not None:
-            role_embed = swap(role_embed)
-        prior = tools.static_scan(self.img_step, [action, role_embed], state)
-        prior = prior[0]
-        prior = {k: swap(v) for k, v in prior.items()}
-        return prior
+    """ 추후 사용할 수도 있음 """
+    # def imagine_with_action(self, action, state, role_embed = None):
+    #     assert role_embed is not None if self.role_config is not None else True
+    #     swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
+    #     assert isinstance(state, dict), state
+    #     action = swap(action)
+    #     if role_embed is not None:
+    #         role_embed = swap(role_embed)
+    #     prior = tools.static_scan(self.img_step, [action, role_embed], state)
+    #     prior = prior[0]
+    #     prior = {k: swap(v) for k, v in prior.items()}
+    #     return prior
 
     def get_feat(self, state):
         stoch = state["stoch"]
@@ -201,9 +219,9 @@ class RSSM(nn.Module):
                     val * (1.0 - is_first_r) + init_state[key] * is_first_r
                 )
 
-        prior = self.img_step(prev_state, prev_action, role_embed)  # 이게 h_t 계산
-        x = torch.cat([prior["deter"], embed], -1) # prior['deter'] is basically the output from the Gru conditioned on past state and action. 즉, [h_t, x_t]
-        
+        prior = self.img_step(prev_state, prev_action, role_embed)  # prior = {z^hat_t ~ p_phi(z^hat_t | h_t), h_t, mean, std}
+        x = torch.cat([prior["deter"], embed], -1) # prior['deter'] is basically the output from the GRU conditioned on past state and action.
+        # x = [h_t, x_t]
         # (batch_size, prior_deter + embed) -> (batch_size, hidden)
         x = self._obs_out_layers(x)
         
@@ -213,7 +231,7 @@ class RSSM(nn.Module):
             stoch = self.get_dist(stats).sample()
         else:
             stoch = self.get_dist(stats).mode()
-        post = {"stoch": stoch, "deter": prior["deter"], **stats}   # z_t ~ q_phi(z_t | h_t, x_t)
+        post = {"stoch": stoch, "deter": prior["deter"], **stats}   # {z_t ~ q_phi(z_t | h_t, x_t), h_t, mean, std}
         return post, prior
 
     def img_step(self, prev_state, prev_action, role_embed = None, sample=True):
@@ -247,7 +265,7 @@ class RSSM(nn.Module):
             stoch = self.get_dist(stats).sample()   # z^hat_t ~ p_phi(z^hat_t | h_t)
         else:
             stoch = self.get_dist(stats).mode()
-        prior = {"stoch": stoch, "deter": deter, **stats}
+        prior = {"stoch": stoch, "deter": deter, **stats}   # {z^hat_t ~ p_phi(z^hat_t | h_t), h_t, mean, std}
         return prior
 
     def get_stoch(self, deter):
@@ -292,17 +310,17 @@ class RSSM(nn.Module):
         dist = lambda x: self.get_dist(x)
         sg = lambda x: {k: v.detach() for k, v in x.items()}
 
-        rep_loss = value = kld(
+        rep_loss = value = kld( # RSSM논문에서 rep_loss 즉 dynamics predictor를 스탑그레디언트 먹이고 encoder 학습
             dist(post) if self._discrete else dist(post)._dist,
             dist(sg(prior)) if self._discrete else dist(sg(prior))._dist,
         )
-        dyn_loss = kld(
+        dyn_loss = kld( # RSSM논문에서 dyn_loss 즉 encoder를 스탑그레디언트 먹이고 dynamics predictor 학습
             dist(sg(post)) if self._discrete else dist(sg(post))._dist,
             dist(prior) if self._discrete else dist(prior)._dist,
         )
         # this is implemented using maximum at the original repo as the gradients are not backpropagated for the out of limits.
-        rep_loss = torch.clip(rep_loss, min=free)
+        rep_loss = torch.clip(rep_loss, min=free)   # KL 값이 너무 작아지는 것을 방지. Free Bits 기법이며, 정보 보존을 보장한다.
         dyn_loss = torch.clip(dyn_loss, min=free)
         loss = dyn_scale * dyn_loss + rep_scale * rep_loss
 
-        return loss, value, dyn_loss, rep_loss
+        return loss, value, dyn_loss, rep_loss  # 이걸 따로 리턴하는 것은 value가 너무 작으면 정보 손실을 의심하고, rep_loss가 항상 1이면 free bits가 과도하단 것을 의미

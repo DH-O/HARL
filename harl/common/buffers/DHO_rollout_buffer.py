@@ -1,12 +1,6 @@
 """Rollout buffer for saving and updating mean state of rollouts."""
 import numpy as np
 import torch
-import matplotlib
-matplotlib.use('Agg')  # Headless backend 설정
-import matplotlib.pyplot as plt
-import os
-
-# from collections import deque
 
 class RolloutBuffer:
     """Buffer for storing and updating rollout mean states."""
@@ -70,9 +64,9 @@ class RolloutBuffer:
             self.current_rollout_states[agent_id].clear()
     
 class WM_RolloutBuffer:
-    def __init__(self, args, obs_shape, action_spaces, num_agents=3, n_rollout_threads=20, device=torch.device("cpu")):
+    def __init__(self, args, obs_dim, action_spaces, num_agents=3, n_rollout_threads=20, device=torch.device("cpu")):
         self.args = args
-        self.obs_shape = obs_shape[0].shape[0]
+        self.obs_shape = obs_dim
         self.num_agents = num_agents
         self.n_rollout_threads = n_rollout_threads
         self.device = device
@@ -92,29 +86,55 @@ class WM_RolloutBuffer:
         self.episode_num = 0
         self.current_size = 0
         
+        self.current_buffer = {'obs_n': np.zeros([self.n_rollout_threads, self.episode_limit + 1, self.num_agents, self.obs_s]),
+                       'a_n_before': np.zeros([self.n_rollout_threads, self.episode_limit + 1, self.num_agents, self.action_spaces[0].shape[0]]),
+                       'active': np.zeros([self.n_rollout_threads, self.episode_limit, 1])
+                       }
         self.buffer = {'obs_n': np.zeros([self.buffer_size, self.episode_limit + 1, self.num_agents, self.obs_s]),
                        'a_n_before': np.zeros([self.buffer_size, self.episode_limit + 1, self.num_agents, self.action_spaces[0].shape[0]]),
-                       'active': np.zeros([self.buffer_size, self.episode_limit + 1, 1])
+                       'active': np.zeros([self.buffer_size, self.episode_limit, 1])
                        }
         self.episode_len = np.zeros(self.buffer_size)
     
+    def clear_current_buffer(self):
+        """현재 버퍼를 초기화합니다."""
+        self.current_buffer = {'obs_n': np.zeros([self.n_rollout_threads, self.episode_limit + 1, self.num_agents, self.obs_s]),
+                       'a_n_before': np.zeros([self.n_rollout_threads, self.episode_limit + 1, self.num_agents, self.action_spaces[0].shape[0]]),
+                       'active': np.zeros([self.n_rollout_threads, self.episode_limit, 1])
+                       }
+    
     def store_transition(self, episode_step, obs_n, a_n, n_rollout_threads):
-        for i in range(n_rollout_threads):
-            self.buffer['obs_n'][self.episode_num + i][episode_step] = obs_n[:, i, :]
-            self.buffer['a_n_before'][self.episode_num + i][episode_step + 1] = a_n[:, i, :]
-            self.buffer['active'][self.episode_num + i][episode_step] = 1.0
+        """현재 버퍼에 transition을 저장합니다."""
+        # obs_n: (num_agents, n_rollout_threads, obs_s)
+        # a_n: (num_agents, n_rollout_threads, action_dim)
+        # 한 번에 모든 rollout thread에 저장
+        self.current_buffer['obs_n'][:, episode_step, :, :] = obs_n.transpose(1, 0, 2)  # (n_rollout_threads, num_agents, obs_s)
+        self.current_buffer['a_n_before'][:, episode_step + 1, :, :] = a_n.transpose(1, 0, 2)  # (n_rollout_threads, num_agents, action_dim)
+        self.current_buffer['active'][:, episode_step] = 1.0
     
     def store_last_step(self, episode_step, obs_n, a_n, n_rollout_threads):
-        for i in range(n_rollout_threads):
-            self.buffer['obs_n'][self.episode_num + i][episode_step] = obs_n[:, i, :]
-            self.buffer['obs_n'][self.episode_num + i][episode_step + 1] = obs_n[:, i, :]
-            self.buffer['a_n_before'][self.episode_num + i][episode_step + 1] = a_n[:, i, :]
-            self.buffer['active'][self.episode_num + i][episode_step] = 1.0
-            self.buffer['active'][self.episode_num + i][episode_step + 1] = 0
+        """현재 버퍼에 마지막 스텝을 저장하고, 전체 버퍼에 복사합니다."""
+        # obs_n: (num_agents, n_rollout_threads, obs_s)
+        # a_n: (num_agents, n_rollout_threads, action_dim)
+        # 한 번에 모든 rollout thread에 저장
+        self.current_buffer['obs_n'][:, episode_step, :, :] = obs_n.transpose(1, 0, 2)  # (n_rollout_threads, num_agents, obs_s)
+        self.current_buffer['obs_n'][:, episode_step + 1, :, :] = obs_n.transpose(1, 0, 2)  # (n_rollout_threads, num_agents, obs_s)
+        self.current_buffer['a_n_before'][:, episode_step + 1, :, :] = a_n.transpose(1, 0, 2)  # (n_rollout_threads, num_agents, action_dim)
+        self.current_buffer['active'][:, episode_step] = 1.0
         
-            self.episode_len[self.episode_num + i] = episode_step + 1
+        # 현재 버퍼의 데이터를 전체 버퍼에 한 번에 복사
+        start_idx = self.episode_num
+        end_idx = self.episode_num + n_rollout_threads
+        self.buffer['obs_n'][start_idx:end_idx] = self.current_buffer['obs_n'].copy()   # 이렇게 하면 self.buffer['obs_n'][start_idx]는 (episode_limit + 1, num_agents, obs_s) 형태가 됨
+        self.buffer['a_n_before'][start_idx:end_idx] = self.current_buffer['a_n_before'].copy()
+        self.buffer['active'][start_idx:end_idx] = self.current_buffer['active'].copy()
+        self.episode_len[start_idx:end_idx] = episode_step + 1
+        
         self.episode_num = (self.episode_num + n_rollout_threads) % self.buffer_size
         self.current_size = min(self.current_size + n_rollout_threads, self.buffer_size)
+        
+        # 현재 버퍼 초기화
+        self.clear_current_buffer()
     
     def sample(self, batch_size):
         # Randomly sampling

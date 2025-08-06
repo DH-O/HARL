@@ -21,7 +21,7 @@ train:
   # number of warmup steps
   warmup_steps: 500000 # 10^4이 원래 값이다. 1000 * max_cycles수로 진행중
   # number of steps per train
-  train_interval: 500
+  train_interval: 50
   # ratio of training iterations to train_interval
   update_per_train: 1
   # logging interval (currently unused)

@@ -6,8 +6,10 @@ import torch
 import imageio
 import numpy as np
 import setproctitle
-import logging
-logger = logging.getLogger(__name__)
+""" 추후 사용할 수도 있음 """
+# import logging
+# logger = logging.getLogger(__name__)
+from harl.utils.logger import Logger
 """ exploration metric """
 import matplotlib
 matplotlib.use('Agg')  # Headless backend 설정
@@ -140,7 +142,7 @@ class OffPolicyBaseRunner:
         self.device = init_device(algo_args["device"])
         self.task_name = get_task_name(args["env"], env_args)
         if not self.algo_args["render"]["use_render"]:
-            self.run_dir, self.log_dir, self.save_dir, self.writter = init_dir(
+            self.run_dir, self.log_dir, self.save_dir, self.writer = init_dir(
                 args["env"],
                 env_args,
                 args["algo"],
@@ -207,7 +209,14 @@ class OffPolicyBaseRunner:
             self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, env_args, self.save_dir)
         
         if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
-            self.wm_runner = WM_Runner(self.envs.observation_space, self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
+            if self.tdd_args["network"]["use_intra_obs"]:
+                self.wm_runner = WM_Runner(4, self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
+            elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                self.wm_runner = WM_Runner(2 + 2 + 2 * (self.num_agents), self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
+            elif self.tdd_args["network"]["use_full_p_obs"]:
+                self.wm_runner = WM_Runner(self.envs.observation_space[0].shape[0], self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
+            else:
+                raise NotImplementedError
         """ TDD 관련 끝 """
         
         if self.share_param:
@@ -329,6 +338,8 @@ class OffPolicyBaseRunner:
         elif "alpha" in self.algo_args["algo"].keys():
             self.alpha = [self.algo_args["algo"]["alpha"]] * self.num_agents
         
+        if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
+            self.logger = Logger(self.tdd_args["logging"], self.log_dir)
         
     def _setup_tdd_logging(self):
         """TDD 관련 로깅 설정을 초기화합니다."""
@@ -417,7 +428,7 @@ class OffPolicyBaseRunner:
         
         train_tdd_sac_flag = False if self.tdd_args is not None else True
         episode_step = 0
-        for step in range(1, steps + 1):
+        for step in range(steps):
             actions = self.get_actions(
                 obs, available_actions=available_actions, add_random=True
             )
@@ -451,34 +462,44 @@ class OffPolicyBaseRunner:
                 if self.tdd_args["train"]["coeff_stop_ratio"] == 0:
                     int_rew_coeff = 1.0
                 else:
-                    if step <= steps // self.tdd_args["train"]["coeff_stop_ratio"]:
+                    if step <= (steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]:
                         # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
-                        int_rew_coeff = 1.0 - (step / (steps // self.tdd_args["train"]["coeff_stop_ratio"]))
+                        int_rew_coeff = 1.0 - (step / ((steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]))
                 
                 if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
-                    pos = obs
-                    new_pos = new_obs
+                    input_for_int = obs
+                    new_input_for_int = new_obs
                 elif self.tdd_args["network"]["use_intra_obs"]:
-                    pos = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
-                    new_pos = new_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
+                    input_for_int = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
+                    new_input_for_int = new_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
                 elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                    pos = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
-                    new_pos = new_obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # new_obs: (n_threads, n_agents, ?)
+                    input_for_int = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
+                    new_input_for_int = new_obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # new_obs: (n_threads, n_agents, ?)
                 else:
-                    pos = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
-                    new_pos = new_obs[:, :, 2:4] # new_obs: (n_threads, n_agents, obs_dim)
+                    input_for_int = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
+                    new_input_for_int = new_obs[:, :, 2:4] # new_obs: (n_threads, n_agents, obs_dim)
                 if dones.any():
-                    int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                    int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_int.transpose(1, 0, 2), input_for_int.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                    if self.tdd_args["wm"]["use_wm"]:
+                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int, new_input_for_int, n_rollout_threads=self.n_rollout_threads, step=episode_step)
                 else:
-                    int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                    int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_int.transpose(1, 0, 2), new_input_for_int.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
+                    if self.tdd_args["wm"]["use_wm"]:
+                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int, new_input_for_int, n_rollout_threads=self.n_rollout_threads, step=episode_step)
                 if self.tdd_args["train"]["use_suppression_reward"]:
                     # 조금 무서운게 rewards 왜 다 똑같은 걸로 나오냐?
                     rewards = (1 - int_rew_coeff) * rewards + int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # size (n_threads, n_agents, 1)
                 else:
                     if self.tdd_args["train"]["off_extrinsic_reward"]:
-                        rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # 여기서 리워드가 대체되는 것은 잘 되는 것 같은데?
+                        if self.tdd_args["wm"]["use_wm"]:
+                            rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.1 * wm_rew + int_rew)   # 여기서 리워드가 대체되는 것은 잘 되는 것 같은데?
+                        else:
+                            rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # 여기서 리워드가 대체되는 것은 잘 되는 것 같은데?
                     else:
-                        rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                        if self.tdd_args["wm"]["use_wm"]:
+                            rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.1 * wm_rew + int_rew)
+                        else:
+                            rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
             """ TDD intrinsic reward 끝 """
             
             next_share_obs = new_share_obs.copy()
@@ -509,9 +530,16 @@ class OffPolicyBaseRunner:
             if self.tdd_args is not None:
                 if any(dones_env):
                     rollout_history_count += 1
+                    # WM 상태 초기화
+                    if self.tdd_args["wm"]["use_wm"]:
+                        self.wm_runner.reset_episode_states()
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) != len(self.tdd_runner.rollout_buffer.rollout_history[1]):
                     raise ValueError("rollout_history[0] and rollout_history[1] must have the same length")
                 if len(self.tdd_runner.rollout_buffer.rollout_history[0]) >= (self.tdd_args["train"]["update_interval_of_rollout_history"] // self.n_rollout_threads) and len(self.tdd_runner.rollout_buffer.rollout_history[0]) > 0:  # 3000 // 20 = 150
+                    if self.tdd_args["wm"]["use_wm"]:
+                        for idx in range(self.tdd_args["wm"]["n_wm_updates"]):
+                            m_ls = self.wm_runner.train_wm(self.wm_runner.wm_buffer)
+                            self.logger.log(m_ls, step=idx)
                     self.tdd_runner.update_tdd_model()
                     if not self.tdd_args["logging"]["enable_graph_logging"]:
                         pass
@@ -546,16 +574,16 @@ class OffPolicyBaseRunner:
                                     landmarks, obstacles = self.envs.remotes[thread_id].recv()
                                     
                                     # 목표점 가져오기
-                                    pos = pos_arr[pos_idx][thread_id, agent_id]
+                                    input_for_int = pos_arr[pos_idx][thread_id, agent_id]
                                     
                                     # 거리 맵 생성
                                     self.tdd_runner.plot_distance_map(
-                                        pos, 
+                                        input_for_int, 
                                         self.env_args["map_size"],
                                         agent_id,
                                         landmarks, 
                                         obstacles, 
-                                        f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{pos[0]}_{pos[1]}",
+                                        f"thread_{thread_id}_agent_{agent_id}_pos_{pos_idx}_{input_for_int[0]}_{input_for_int[1]}",
                                         step=step
                                     )
                     self.tdd_runner.rollout_buffer.clear()
@@ -570,37 +598,30 @@ class OffPolicyBaseRunner:
                             if (step - step_start_tdd_sac) % self.algo_args["train"]["train_interval"] == 0:
                                 for _ in range(update_num):
                                     critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
-                                    self.writter.add_scalar("critic_loss", critic_loss, step)
-                                    self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
-                                    self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
-                                    self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
-                                    self.writter.add_scalar("alpha_loss", alpha_loss, step)
+                                    self.writer.add_scalar("critic_loss", critic_loss, step)
+                                    self.writer.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                                    self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                                    self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
+                                    self.writer.add_scalar("alpha_loss", alpha_loss, step)
                 else:
-                    if step % self.algo_args["train"]["train_interval"] == 0:
-                        # 충분할 때만 train 진행
-                        for _ in range(update_num):
-                            critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
-                            self.writter.add_scalar("critic_loss", critic_loss, step)
-                            self.writter.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
-                            self.writter.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
-                            self.writter.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
-                            self.writter.add_scalar("alpha_loss", alpha_loss, step)
-                    else:
-                        if step % self.algo_args["train"]["train_interval"] == 0:   # train_interval이 50이면 50스텝마다 학습. 근데 이거 tdd 업데이트랑 일치시키는게 좋을 것 같긴 한데
-                            if self.algo_args["train"]["use_linear_lr_decay"]:  # False
+                    if step % self.algo_args["train"]["train_interval"] == 0 and step > 0:
+                        if self.algo_args["train"]["use_linear_lr_decay"]:  # False
                                 if self.share_param:
                                     self.actor[0].lr_decay(step, steps)
                                 else:
                                     for agent_id in range(self.num_agents):
                                         self.actor[agent_id].lr_decay(step, steps)
                                 self.critic.lr_decay(step, steps)
-                            for _ in range(update_num): # update_num은 50이다.
-                                critic_loss, actor_loss, alpha_loss = self.train()    # 여기서 HASAC의 train()이 호출된다.
-                                self.writter.add_scalar("critic_loss", critic_loss, step)
-                                self.writter.add_scalar("actor_loss", actor_loss, step)
-                                self.writter.add_scalar("alpha_loss", alpha_loss, step)
-                self.writter.add_scalar("rollout_history_count", rollout_history_count, step)
-            if step % self.algo_args["train"]["eval_interval"] == 0:
+                        for _ in range(update_num):
+                            critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
+                            self.writer.add_scalar("critic_loss", critic_loss, step)
+                            self.writer.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                            self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                            self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
+                            self.writer.add_scalar("alpha_loss", alpha_loss, step)
+                self.writer.add_scalar("rollout_history_count", rollout_history_count, step)
+            
+            if step % self.algo_args["train"]["eval_interval"] == 0 and step > 0:
                 print(f"rollout_history_count: {rollout_history_count}")
                 cur_step = (
                     self.algo_args["train"]["warmup_steps"]
@@ -851,9 +872,11 @@ class OffPolicyBaseRunner:
         """ TDD update """
         if self.tdd_args is not None:
             # TDD 모델 업데이트
-            self.tdd_runner.update_tdd_model(is_warm_up=True)
             if self.tdd_args["wm"]["use_wm"]:
-                self.wm_runner.train_wm(self.wm_runner.wm_buffer)
+                for idx in range(self.tdd_args["wm"]["n_wm_updates"]):
+                    m_ls = self.wm_runner.train_wm(self.wm_runner.wm_buffer)
+                    self.logger.log(m_ls, step=idx)
+            self.tdd_runner.update_tdd_model(is_warm_up=True)
             
             # 각 환경과 에이전트별로 거리 맵 생성 (최적화: 샘플링으로 줄임)
             if not self.tdd_args["logging"]["enable_graph_logging"]:
@@ -1397,10 +1420,10 @@ class OffPolicyBaseRunner:
                         ",".join(map(str, [cur_step, eval_avg_rew, eval_avg_len])) + "\n"
                     )
                 self.log_file.flush()
-                self.writter.add_scalar(
+                self.writer.add_scalar(
                     "eval_average_episode_rewards", eval_avg_rew, cur_step
                 )
-                self.writter.add_scalar(
+                self.writer.add_scalar(
                     "eval_average_episode_length", eval_avg_len, cur_step
                 )
                 break
@@ -1590,6 +1613,6 @@ class OffPolicyBaseRunner:
                 if hasattr(self.eval_envs, 'viewer') and self.eval_envs.viewer is not None:
                     import pygame
                     pygame.quit()
-            self.writter.export_scalars_to_json(str(self.log_dir + "/summary.json"))
-            self.writter.close()
+            self.writer.export_scalars_to_json(str(self.log_dir + "/summary.json"))
+            self.writer.close()
             self.log_file.close()
