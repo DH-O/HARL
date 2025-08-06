@@ -481,11 +481,11 @@ class OffPolicyBaseRunner:
                 if dones.any():
                     int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_int.transpose(1, 0, 2), input_for_int.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
                     if self.tdd_args["wm"]["use_wm"]:
-                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int, new_input_for_int, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int, new_input_for_int, actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
                 else:
                     int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_int.transpose(1, 0, 2), new_input_for_int.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
                     if self.tdd_args["wm"]["use_wm"]:
-                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int, new_input_for_int, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int, new_input_for_int, actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
                 if self.tdd_args["train"]["use_suppression_reward"]:
                     # 조금 무서운게 rewards 왜 다 똑같은 걸로 나오냐?
                     rewards = (1 - int_rew_coeff) * rewards + int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew   # size (n_threads, n_agents, 1)

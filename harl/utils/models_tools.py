@@ -175,13 +175,13 @@ def get_grad_norm(parameters):
         sum_grad += parameter.grad.norm() ** 2
     return math.sqrt(sum_grad)
 
-def static_scan(fn, inputs, start):
+def static_scan(fn, inputs, start): # inputs: (action, embed, is_first)
     last = start
-    indices = range(inputs[0].shape[0])
+    indices = range(inputs[0].shape[0]) # inputs[0]의 shape은 (n_timesteps, n_rollout_threads, action_dim)
     flag = True
-    for index in indices:
+    for index in indices:   # index: 0, 1, 2, ..., n_timesteps - 1
         inp = lambda x: (_input[x] for _input in inputs)
-        last = fn(last, *inp(index))
+        last = fn(last, *inp(index))    # fn: obs_step이긴한데
         if flag:
             if type(last) == type({}):
                 outputs = {

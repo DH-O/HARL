@@ -1,9 +1,9 @@
 # This is the configuration file for the HASAC algorithm.
 seed:
   # whether to use the specified seed
-  seed_specify: False
+  seed_specify: True
   # seed
-  seed: 77
+  seed: 9423
 device:
   # whether to use CUDA
   cuda: True

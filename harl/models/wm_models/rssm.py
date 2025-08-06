@@ -126,26 +126,17 @@ class RSSM(nn.Module):
         else:
             raise NotImplementedError(self._initial)
 
-    def observe_step(self, prev_state, embed, action, is_first, role_embed=None, sample=True):
+    def observe_step(self, prev_state, embed, action, is_first):
         """단일 스텝 observe 처리 - 이전 상태를 받아서 새로운 상태를 반환"""
-        if not self.role_config and role_embed is not None:
-            raise ValueError("Role embedding is not configured.")
         
-        # 이전 상태가 없으면 초기화
         if prev_state is None:
-            prev_state = self.initial(embed.shape[0])
-            prev_action = torch.zeros((embed.shape[0], self._num_actions)).to(self._device)
-        else:
-            prev_action = action
-        
+            prev_state, _ = self.obs_step(prev_state, action[:, 0, :], embed[:, 0, :], is_first[:, 0])
         # obs_step을 직접 호출하여 단일 스텝 처리
-        post, prior = self.obs_step(prev_state, prev_action, embed, is_first, role_embed, sample)
+        post, prior = self.obs_step(prev_state, action[:, 1, :], embed[:, 1, :], is_first[:, 1])
         
         return post, prior
 
-    def observe(self, embed, action, is_first, role_embed = None, state=None):
-        if not self.role_config and role_embed is not None:
-            raise ValueError("Role embedding is not configured.")
+    def observe(self, embed, action, is_first, state=None):
         
         """ 일단 차원부터 수정하고 """
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
@@ -156,7 +147,7 @@ class RSSM(nn.Module):
                 prev_state[0], prev_act, embed, is_first
             ),
             (action, embed, is_first),
-            (state, state),
+            (state, state), # state는 오직 초기 상태 설정을 위함이라고 봐도 된다. (state, state)로 한건 불필요한 구현.
         )   # static_scan은 모든 시간 스텝에 대해서 함수를 적용하고, 결과를 반환한다.
 
         # (batch, time, stoch, discrete_num) -> (batch, time, stoch, discrete_num)
@@ -197,16 +188,17 @@ class RSSM(nn.Module):
             )
         return dist
 
-    def obs_step(self, prev_state, prev_action, embed, is_first, role_embed = None, sample=True):
+    def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
         """ 인코더 관련된 거의 모든 것 """
         # initialize all prev_state
         if prev_state == None or torch.sum(is_first) == len(is_first):  # Question: 왜 이렇게 초기화 하는거지?
-            prev_state = self.initial(len(is_first))
+            prev_state = self.initial(len(is_first))    # {'mean': [n_rollout_threads, stoch], 'std': [n_rollout_threads, stoch], 'stoch': [n_rollout_threads, stoch], 'deter': [n_rollout_threads, deter]}
             prev_action = torch.zeros((len(is_first), self._num_actions)).to(
                 self._device
-            )
+            )   # prev_action shape: (n_rollout_threads, action_dim)
         # overwrite the prev_state only where is_first=True
-        elif torch.sum(is_first) > 0:
+        elif torch.sum(is_first) > 0:   
+            # 일부 스레드만 초기화 되는 경우를 고려해서 초기화 되지 않은 스레드는 이전 상태를 유지하도록 함.
             is_first = is_first[:, None]
             prev_action *= 1.0 - is_first
             init_state = self.initial(len(is_first))
@@ -218,15 +210,15 @@ class RSSM(nn.Module):
                 prev_state[key] = (
                     val * (1.0 - is_first_r) + init_state[key] * is_first_r
                 )
-
-        prior = self.img_step(prev_state, prev_action, role_embed)  # prior = {z^hat_t ~ p_phi(z^hat_t | h_t), h_t, mean, std}
+        # img_step에서 h_{t-1}, x_{t-1}, a_{t-1}을 받아서 h_t를 계산하고, 그걸 이용해 prior까지 계산
+        prior = self.img_step(prev_state, prev_action)  # prior = {z^hat_t ~ p_phi(z^hat_t | h_t), h_t, mean, std}
         x = torch.cat([prior["deter"], embed], -1) # prior['deter'] is basically the output from the GRU conditioned on past state and action.
         # x = [h_t, x_t]
         # (batch_size, prior_deter + embed) -> (batch_size, hidden)
         x = self._obs_out_layers(x)
         
         # (batch_size, hidden) -> (batch_size, stoch, discrete_num)
-        stats = self._suff_stats_layer("obs", x)
+        stats = self._suff_stats_layer("obs", x)    # 확률 분포를 완전히 결정하는 최소한의 통계량을 뽑아 내기 위한 작업. mean, std 여기서 나온다.
         if sample:  # Question: 이거 목적이 뭔데
             stoch = self.get_dist(stats).sample()
         else:
@@ -234,7 +226,7 @@ class RSSM(nn.Module):
         post = {"stoch": stoch, "deter": prior["deter"], **stats}   # {z_t ~ q_phi(z_t | h_t, x_t), h_t, mean, std}
         return post, prior
 
-    def img_step(self, prev_state, prev_action, role_embed = None, sample=True):
+    def img_step(self, prev_state, prev_action, sample=True):
         """ 순차 모델 관련 """
         # (batch, stoch, discrete_num)
         prev_stoch = prev_state["stoch"]    # prev_stoch = z_{t-1}, prev_action = a_{t-1}
@@ -243,17 +235,14 @@ class RSSM(nn.Module):
             # (batch, stoch, discrete_num) -> (batch, stoch * discrete_num)
             prev_stoch = prev_stoch.reshape(shape)
         # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
-        if role_embed is not None:
-            x = torch.cat([prev_stoch, prev_action, role_embed], -1)
-        else:
-            x = torch.cat([prev_stoch, prev_action], -1)    # x = [z_{t-1}, a_{t-1}]
+        x = torch.cat([prev_stoch, prev_action], -1)    # x_{t-1} = [z_{t-1}, a_{t-1}]
         # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
-        x = self._img_in_layers(x)  # GRU인풋에 맞도록 변환하는 작업
-        for _ in range(self._rec_depth):  # rec depth is not correctly implemented
-            deter = prev_state["deter"] # h_{t-1}
+        x = self._img_in_layers(x)  # GRU인풋에 맞도록 변환하는 작업 x_{t-1} -> embed_(x_{t-1})
+        for _ in range(self._rec_depth):  # rec depth is not correctly implemented -> 그래서 self._rec_depth를 1로 설정되어있음
+            deter = prev_state["deter"] # h_{t-1}. 애초에 RSSM 논문 (1)식을 봐도 sequence 모델은 결정적 모델이다. 그래서 "deter"
             # (batch, hidden), (batch, deter) -> (batch, deter), (batch, deter)
-            x, deter = self._cell(x, [deter])   # GRU: h_t = f(h_{t-1}, embed_(x_{t-1}))
-            deter = deter[0]  # Keras wraps the state in a list.
+            _, deter = self._cell(x, [deter])   # GRU: h_t = f(h_{t-1}, embed_(x_{t-1}))
+            deter = deter[0]  # Keras wraps the state in a list.    deter은 리스트인데 길이가 1밖에 안 된다. 케라스 스타일의 잔재로 보임.
         
         """ 다이나믹스 예측기 관련 """
         # (batch, deter) -> (batch, hidden)

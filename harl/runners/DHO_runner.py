@@ -564,7 +564,7 @@ class WM_Runner:
         self.prev_states = [None for _ in range(self.num_agents)]
         self.episode_step = 0
     
-    def compute_wm_int_rew(self, obs, new_obs, is_eval=False, temp_wm_buffer=None, n_rollout_threads=None, step=None):
+    def compute_wm_int_rew(self, obs, new_obs, actions, is_eval=False, temp_wm_buffer=None, n_rollout_threads=None, step=None):
         """World Model 기반 intrinsic reward 계산 - 단일 스텝 처리 방식
         
         Args:
@@ -580,11 +580,6 @@ class WM_Runner:
         """
         step %= self.max_episode_len
         
-        # 에피소드 시작 시 상태 초기화
-        if step == 0:
-            self.prev_states = [None for _ in range(self.num_agents)]
-            self.episode_step = 0
-        
         # WM 버퍼에서 현재까지의 시퀀스 가져오기
         if temp_wm_buffer is None:
             # WM_RolloutBuffer에서 현재 에피소드 데이터 가져오기
@@ -597,105 +592,98 @@ class WM_Runner:
             return np.zeros((n_rollout_threads, self.num_agents, 1))
         
         with torch.no_grad():
-            agent_obs = current_episode_data['obs_n'][:, :, :, :]  # (n_rollout_threads, n_timesteps, n_agents, obs_dim)
-            agent_actions = current_episode_data['a_n_before'][:, :, :, :]  # (n_rollout_threads, n_timesteps, n_agents, action_dim)
+            agent_obs = current_episode_data['obs_n'][:, :(step + 2), :, :]  # (n_rollout_threads, n_timesteps, n_agents, obs_dim)
+            agent_actions_before = current_episode_data['a_n_before'][:, :(step + 2), :, :]  # (n_rollout_threads, n_timesteps, n_agents, action_dim)
             
             # 현재 스텝의 데이터 업데이트
             if step == 0:
-                agent_obs[:, step, :, :] = obs
-                agent_obs[:, step + 1, :, :] = new_obs
+                agent_obs[:, 0, :, :] = obs
+                agent_obs[:, 1, :, :] = new_obs
+                agent_actions_before[:, 1, :, :] = actions
             elif step > 0:
                 if not (agent_obs[:, step, :, :] == obs).all():
                     raise ValueError(f"step({step})에서 obs와 agent_obs[:, step, :, :]가 다릅니다.")
                 agent_obs[:, step + 1, :, :] = new_obs
+                agent_actions_before[:, step + 1, :, :] = actions
             else:
                 raise ValueError(f"step({step})이 0 미만입니다.")
             
             # 기존 방식과 새로운 방식의 결과를 비교하기 위한 변수들
-            old_post_results = []
-            old_prior_results = []
-            new_post_results = []
-            new_prior_results = []
-            old_kl_losses = []
-            new_kl_losses = []
+            # old_post_results = []
+            # old_prior_results = []
+            # new_post_results = []
+            # new_prior_results = []
+            # old_kl_losses = []
+            # new_kl_losses = []
             
             # 기존 방식 (전체 시퀀스 처리)
-            threads_o = torch.tensor(agent_obs, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, obs_dim)
-            threads_a_before = torch.tensor(agent_actions, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, action_dim)
+            # threads_o = torch.tensor(agent_obs, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, obs_dim)
+            # threads_a_before = torch.tensor(agent_actions_before, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, action_dim)
             
-            threads_is_first = torch.zeros((n_rollout_threads, self.max_episode_len + 1, self.num_agents), device=self.device, dtype=torch.float32)
-            threads_is_first[:, 0, :] = 1.0
-            threads_is_first = threads_is_first.permute(0, 2, 1) # shape: (n_rollout_threads, n_agents, n_timesteps + 1)
+            # threads_is_first = torch.zeros((n_rollout_threads, (step + 2), self.num_agents), device=self.device, dtype=torch.float32)
+            # threads_is_first[:, 0, :] = 1.0
+            # threads_is_first = threads_is_first.permute(0, 2, 1) # shape: (n_rollout_threads, n_agents, n_timesteps + 1)
             
             # 새로운 방식 (단일 스텝 처리)
-            current_obs = torch.tensor(agent_obs[:, step + 1, :, :], device=self.device, dtype=torch.float32)  # (n_rollout_threads, n_agents, obs_dim)
-            current_action = torch.tensor(agent_actions[:, step, :, :], device=self.device, dtype=torch.float32)  # (n_rollout_threads, n_agents, action_dim)
-            
-            # is_first 플래그 설정 (에피소드 시작 시에만 True)
-            is_first = torch.zeros((n_rollout_threads, self.num_agents), device=self.device, dtype=torch.float32)
+            threads_o_step = torch.tensor(agent_obs[:, step:(step + 2), :, :], device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, 2, obs_dim)
+            threads_a_before_step = torch.tensor(agent_actions_before[:, step:(step + 2), :, :], device=self.device, dtype=torch.float32).permute(0, 2, 1, 3)  # (n_rollout_threads, n_agents, 2, action_dim)
+            threads_is_first_step = torch.zeros((n_rollout_threads, 2, self.num_agents), device=self.device, dtype=torch.float32)
             if step == 0:
-                is_first[:, :] = 1.0
+                threads_is_first_step[:, 0, :] = 1.0
+            threads_is_first_step = threads_is_first_step.permute(0, 2, 1) # shape: (n_rollout_threads, n_agents, 2)
             
             int_rew = []
             for agent_id in range(self.num_agents):
                 # === 기존 방식 (전체 시퀀스 처리) ===
-                wm_data_dict_old = {
-                    'vector_obs': threads_o[:, agent_id, :, :],
-                    'action': threads_a_before[:, agent_id, :, :],
-                    'is_first': threads_is_first[:, agent_id, :]
-                }
+                # wm_data_dict_old = {
+                #     'vector_obs': threads_o[:, agent_id, :, :],  # shape: (n_rollout_threads, n_timesteps + 1, obs_dim)
+                #     'action': threads_a_before[:, agent_id, :, :],  # shape: (n_rollout_threads, n_timesteps + 1, action_dim)
+                #     'is_first': threads_is_first[:, agent_id, :]  # shape: (n_rollout_threads, n_timesteps + 1)
+                # }
                 
-                embed_old = self.wm_ls[agent_id].encoder(wm_data_dict_old)  # embed의 shape: (n_rollout_threads, n_timesteps + 1, embed_size)
-                # RSSM observe를 통한 prior와 posterior 계산 (현재까지의 시퀀스)
-                post_old, prior_old = self.wm_ls[agent_id].dynamics.observe(
-                    embed_old, 
-                    threads_a_before[:, agent_id, :(step + 2), :], 
-                    threads_is_first[:, agent_id, :(step + 2)]
-                )
-                
-                # 기존 방식의 KL loss 계산 (비교용)
-                kl_loss_old, kl_value_old, dyn_loss_old, rep_loss_old = self.wm_ls[agent_id].dynamics.kl_loss(
-                    post_old, prior_old, kl_free, dyn_scale, rep_scale
-                )
-                
-                # === 새로운 방식 (단일 스텝 처리) ===
-                agent_obs_step = current_obs[:, agent_id, :]  # (n_rollout_threads, obs_dim)
-                agent_action_step = current_action[:, agent_id, :]  # (n_rollout_threads, action_dim)
-                agent_is_first = is_first[:, agent_id]  # (n_rollout_threads,)
-                
-                # 인코더를 통한 임베딩 생성
-                wm_data_dict_new = {
-                    'vector_obs': agent_obs_step.unsqueeze(1),  # (n_rollout_threads, 1, obs_dim)
-                    'action': agent_action_step.unsqueeze(1),    # (n_rollout_threads, 1, action_dim)
-                    'is_first': agent_is_first.unsqueeze(1),    # (n_rollout_threads, 1)
-                }
-                
-                embed_new = self.wm_ls[agent_id].encoder(wm_data_dict_new)  # (n_rollout_threads, 1, embed_size)
-                embed_new = embed_new.squeeze(1)  # (n_rollout_threads, embed_size)
-                
-                # 단일 스텝 observe 처리
-                post_new, prior_new = self.wm_ls[agent_id].dynamics.observe_step(
-                    self.prev_states[agent_id],  # 이전 상태
-                    embed_new,                   # 현재 임베딩
-                    agent_action_step,           # 현재 액션
-                    agent_is_first,              # is_first 플래그
-                )
-                
-                # 결과 비교 및 저장
-                old_post_results.append(post_old)
-                old_prior_results.append(prior_old)
-                new_post_results.append(post_new)
-                new_prior_results.append(prior_new)
-                old_kl_losses.append(kl_loss_old)
-                new_kl_losses.append(kl_loss)
+                # embed_old = self.wm_ls[agent_id].encoder(wm_data_dict_old)  # embed_old의 shape: (n_rollout_threads, 2, embed_size)
+                # # RSSM observe를 통한 prior와 posterior 계산 (현재까지의 시퀀스)
+                # post_old, prior_old = self.wm_ls[agent_id].dynamics.observe(
+                #     embed_old, 
+                #     threads_a_before[:, agent_id, :, :], 
+                #     threads_is_first[:, agent_id, :]
+                # )
                 
                 # KL loss 계산 (새로운 방식 사용)
                 kl_free = self.tdd_args["wm"]["kl_free"]
                 dyn_scale = self.tdd_args["wm"]["dyn_scale"]
                 rep_scale = self.tdd_args["wm"]["rep_scale"]
                 
+                # 기존 방식의 KL loss 계산 (비교용)
+                # kl_loss_old, kl_value_old, dyn_loss_old, rep_loss_old = self.wm_ls[agent_id].dynamics.kl_loss(
+                #     post_old, prior_old, kl_free, dyn_scale, rep_scale
+                # )
+                
+                # === 새로운 방식 (단일 스텝 처리) ===
+                # agent_obs_step = threads_o_step[:, agent_id, :, :]  # (n_rollout_threads, 2, obs_dim)
+                # agent_obs_next_step = threads_o_step[:, agent_id, 1, :]  # (n_rollout_threads, obs_dim)
+                # agent_action_before_step = threads_a_before_step[:, agent_id, 1, :]  # (n_rollout_threads, action_dim)
+                # agent_is_first = is_first[:, agent_id]  # (n_rollout_threads,)
+                
+                # 인코더를 통한 임베딩 생성
+                wm_data_dict_new = {
+                    'vector_obs': threads_o_step[:, agent_id, :, :],  # (n_rollout_threads, 2, obs_dim)
+                    'action': threads_a_before_step[:, agent_id, :, :],    # (n_rollout_threads, 2, action_dim)
+                    'is_first': threads_is_first_step[:, agent_id]  # (n_rollout_threads,)
+                }
+                
+                embed_step = self.wm_ls[agent_id].encoder(wm_data_dict_new)  # (n_rollout_threads, 2, embed_size)
+                
+                # 단일 스텝 observe 처리
+                post_step, prior_step = self.wm_ls[agent_id].dynamics.observe_step(
+                    self.prev_states[agent_id],  # 이전 상태
+                    embed_step,                   # 현재 임베딩
+                    threads_a_before_step[:, agent_id, :, :],           # 현재 액션
+                    threads_is_first_step[:, agent_id]              # is_first 플래그
+                )
+                
                 kl_loss, kl_value, dyn_loss, rep_loss = self.wm_ls[agent_id].dynamics.kl_loss(
-                    post_new, prior_new, kl_free, dyn_scale, rep_scale
+                    post_step, prior_step, kl_free, dyn_scale, rep_scale
                 )
                 
                 # intrinsic reward는 각 스레드별 KL loss (평균 내지 않음)
@@ -705,17 +693,25 @@ class WM_Runner:
                 else:
                     int_rew = torch.cat([int_rew, kl_loss.unsqueeze(1)], dim=1)  # (n_rollout_threads, n_agents)
                 
+                # 결과 비교 및 저장
+                # old_post_results.append(post_old)
+                # old_prior_results.append(prior_old)
+                # new_post_results.append(post_step)
+                # new_prior_results.append(prior_step)
+                # old_kl_losses.append(kl_loss_old)
+                # new_kl_losses.append(kl_loss)
+                
                 # 다음 스텝을 위해 현재 상태 저장
-                self.prev_states[agent_id] = post_new
+                self.prev_states[agent_id] = post_step
             
             # 최종 차원을 (n_rollout_threads, n_agents, 1)로 맞춤
             int_rew = int_rew.unsqueeze(-1)  # (n_rollout_threads, n_agents, 1)
             
             # === 결과 비교 ===
-            if step % 1 == 0:  # 100 스텝마다 비교 (성능상의 이유로)
-                self._compare_results(old_post_results, old_prior_results, 
-                                   new_post_results, new_prior_results, 
-                                   old_kl_losses, new_kl_losses, step)
+            # if step % 1 == 0:  # 100 스텝마다 비교 (성능상의 이유로)
+            #     self._compare_results(old_post_results, old_prior_results, 
+            #                        new_post_results, new_prior_results, 
+            #                        old_kl_losses, new_kl_losses, step)
         
         # 로깅 (선택적)
         if step is not None and step % 1000 == 0:
@@ -727,7 +723,7 @@ class WM_Runner:
         return np.array(int_rew.cpu().numpy())
     
     def _compare_results(self, old_post_results, old_prior_results, new_post_results, new_prior_results, old_kl_losses, new_kl_losses, step):
-        """기존 방식과 새로운 방식의 결과를 비교합니다."""
+        """기존 방식과 새로운 방식의 결과를 비교합니다. 분포 파라미터 중심으로 비교합니다."""
         try:
             for agent_id in range(self.num_agents):
                 old_post = old_post_results[agent_id]
@@ -737,67 +733,172 @@ class WM_Runner:
                 old_kl_loss = old_kl_losses[agent_id]
                 new_kl_loss = new_kl_losses[agent_id]
                 
-                # KL loss 비교
+                # === 1. 분포 파라미터 비교 (같아야 함) ===
+                logger.info(f"Step {step}, Agent {agent_id}: 분포 파라미터 비교")
+                
+                # Posterior 분포 파라미터 비교
+                for param_key in ["mean", "std", "logit"]:
+                    if param_key in old_post and param_key in new_post:
+                        old_param = old_post[param_key]
+                        new_param = new_post[param_key]
+                        
+                        # 마지막 타임스텝만 비교 (새로운 방식은 단일 스텝이므로)
+                        if len(old_param.shape) > 1:
+                            old_param_last = old_param[:, -1]  # 마지막 타임스텝
+                        else:
+                            old_param_last = old_param
+                        
+                        # 분포 파라미터 차이 계산
+                        param_diff = torch.abs(old_param_last - new_param).max().item()
+                        
+                        if param_diff > 1e-6:
+                            logger.warning(f"  Posterior '{param_key}': 차이 = {param_diff:.8f}")
+                            logger.warning(f"    Old shape: {old_param.shape}, New shape: {new_param.shape}")
+                            logger.warning(f"    Old values: {old_param_last[:3]}")
+                            logger.warning(f"    New values: {new_param[:3]}")
+                        else:
+                            logger.info(f"  Posterior '{param_key}': 일치 (차이 = {param_diff:.8f})")
+                
+                # Prior 분포 파라미터 비교
+                for param_key in ["mean", "std", "logit"]:
+                    if param_key in old_prior and param_key in new_prior:
+                        old_param = old_prior[param_key]
+                        new_param = new_prior[param_key]
+                        
+                        if len(old_param.shape) > 1:
+                            old_param_last = old_param[:, -1]
+                        else:
+                            old_param_last = old_param
+                        
+                        param_diff = torch.abs(old_param_last - new_param).max().item()
+                        
+                        if param_diff > 1e-6:
+                            logger.warning(f"  Prior '{param_key}': 차이 = {param_diff:.8f}")
+                        else:
+                            logger.info(f"  Prior '{param_key}': 일치 (차이 = {param_diff:.8f})")
+                
+                # === 2. 결정적 상태 비교 (같아야 함) ===
+                logger.info(f"Step {step}, Agent {agent_id}: 결정적 상태 비교")
+                
+                # Posterior deter 비교
+                if "deter" in old_post and "deter" in new_post:
+                    old_deter = old_post["deter"]
+                    new_deter = new_post["deter"]
+                    
+                    if len(old_deter.shape) > 1:
+                        old_deter_last = old_deter[:, -1]
+                    else:
+                        old_deter_last = old_deter
+                    
+                    deter_diff = torch.abs(old_deter_last - new_deter).max().item()
+                    
+                    if deter_diff > 1e-6:
+                        logger.warning(f"  Posterior deter: 차이 = {deter_diff:.8f}")
+                    else:
+                        logger.info(f"  Posterior deter: 일치 (차이 = {deter_diff:.8f})")
+                
+                # Prior deter 비교
+                if "deter" in old_prior and "deter" in new_prior:
+                    old_deter = old_prior["deter"]
+                    new_deter = new_prior["deter"]
+                    
+                    if len(old_deter.shape) > 1:
+                        old_deter_last = old_deter[:, -1]
+                    else:
+                        old_deter_last = old_deter
+                    
+                    deter_diff = torch.abs(old_deter_last - new_deter).max().item()
+                    
+                    if deter_diff > 1e-6:
+                        logger.warning(f"  Prior deter: 차이 = {deter_diff:.8f}")
+                    else:
+                        logger.info(f"  Prior deter: 일치 (차이 = {deter_diff:.8f})")
+                
+                # === 3. 확률적 상태 비교 (다를 수 있음 - 정상) ===
+                logger.info(f"Step {step}, Agent {agent_id}: 확률적 상태 비교 (샘플링으로 인해 다를 수 있음)")
+                
+                if "stoch" in old_post and "stoch" in new_post:
+                    old_stoch = old_post["stoch"]
+                    new_stoch = new_post["stoch"]
+                    
+                    if len(old_stoch.shape) > 1:
+                        old_stoch_last = old_stoch[:, -1]
+                    else:
+                        old_stoch_last = old_stoch
+                    
+                    stoch_diff = torch.abs(old_stoch_last - new_stoch).max().item()
+                    
+                    # 확률적 샘플링이므로 차이가 있어도 정상
+                    logger.info(f"  Posterior stoch: 차이 = {stoch_diff:.8f} (샘플링으로 인한 차이)")
+                
+                if "stoch" in old_prior and "stoch" in new_prior:
+                    old_stoch = old_prior["stoch"]
+                    new_stoch = new_prior["stoch"]
+                    
+                    if len(old_stoch.shape) > 1:
+                        old_stoch_last = old_stoch[:, -1]
+                    else:
+                        old_stoch_last = old_stoch
+                    
+                    stoch_diff = torch.abs(old_stoch_last - new_stoch).max().item()
+                    
+                    logger.info(f"  Prior stoch: 차이 = {stoch_diff:.8f} (샘플링으로 인한 차이)")
+                
+                # === 4. KL Loss 비교 (분포 파라미터 기반) ===
+                logger.info(f"Step {step}, Agent {agent_id}: KL Loss 비교")
+                
                 if len(old_kl_loss.shape) > 1:
                     old_kl_last = old_kl_loss[:, -1]  # 마지막 타임스텝
                 else:
                     old_kl_last = old_kl_loss
                 
                 kl_diff = torch.abs(old_kl_last - new_kl_loss).max().item()
-                if kl_diff > 1e-6:
-                    logger.warning(f"Step {step}, Agent {agent_id}, KL Loss: "
-                                 f"Difference = {kl_diff:.8f}")
-                    logger.warning(f"  Old KL shape: {old_kl_loss.shape}, New KL shape: {new_kl_loss.shape}")
-                    logger.warning(f"  Old KL last step: {old_kl_last[:3]}")
-                    logger.warning(f"  New KL values: {new_kl_loss[:3]}")
+                
+                # KL Loss는 분포 파라미터에 기반하므로 비슷해야 함
+                if kl_diff > 1e-4:  # KL Loss는 약간의 차이 허용
+                    logger.warning(f"  KL Loss: 차이 = {kl_diff:.8f}")
+                    logger.warning(f"    Old KL shape: {old_kl_loss.shape}, New KL shape: {new_kl_loss.shape}")
+                    logger.warning(f"    Old KL last step: {old_kl_last[:3]}")
+                    logger.warning(f"    New KL values: {new_kl_loss[:3]}")
                 else:
-                    logger.info(f"Step {step}, Agent {agent_id}, KL Loss: "
-                              f"Results match (diff = {kl_diff:.8f})")
+                    logger.info(f"  KL Loss: 일치 (차이 = {kl_diff:.8f})")
                 
-                # 각 키에 대해 비교
-                for key in old_post.keys():
-                    if key in new_post:
-                        old_val = old_post[key]
-                        new_val = new_post[key]
-                        
-                        # 마지막 타임스텝만 비교 (새로운 방식은 단일 스텝이므로)
-                        if len(old_val.shape) > 1:
-                            old_val_last = old_val[:, -1]  # 마지막 타임스텝
-                        else:
-                            old_val_last = old_val
-                        
-                        # 차이 계산
-                        diff = torch.abs(old_val_last - new_val).max().item()
-                        
-                        if diff > 1e-6:  # 허용 오차
-                            logger.warning(f"Step {step}, Agent {agent_id}, Key '{key}': "
-                                         f"Difference = {diff:.8f}")
-                            logger.warning(f"  Old shape: {old_val.shape}, New shape: {new_val.shape}")
-                            logger.warning(f"  Old last step: {old_val_last[:3]}")  # 처음 3개 값만 출력
-                            logger.warning(f"  New values: {new_val[:3]}")
-                        else:
-                            logger.info(f"Step {step}, Agent {agent_id}, Key '{key}': "
-                                      f"Results match (diff = {diff:.8f})")
+                # === 5. 분포 통계 비교 ===
+                logger.info(f"Step {step}, Agent {agent_id}: 분포 통계 비교")
                 
-                # prior도 비교
-                for key in old_prior.keys():
-                    if key in new_prior:
-                        old_val = old_prior[key]
-                        new_val = new_prior[key]
+                try:
+                    # Posterior 분포의 통계적 특성 비교
+                    if "mean" in old_post and "std" in old_post and "mean" in new_post and "std" in new_post:
+                        old_mean = old_post["mean"]
+                        old_std = old_post["std"]
+                        new_mean = new_post["mean"]
+                        new_std = new_post["std"]
                         
-                        if len(old_val.shape) > 1:
-                            old_val_last = old_val[:, -1]
+                        if len(old_mean.shape) > 1:
+                            old_mean_last = old_mean[:, -1]
+                            old_std_last = old_std[:, -1]
                         else:
-                            old_val_last = old_val
+                            old_mean_last = old_mean
+                            old_std_last = old_std
                         
-                        diff = torch.abs(old_val_last - new_val).max().item()
+                        # 분포의 통계적 특성 비교
+                        mean_diff = torch.abs(old_mean_last - new_mean).max().item()
+                        std_diff = torch.abs(old_std_last - new_std).max().item()
                         
-                        if diff > 1e-6:
-                            logger.warning(f"Step {step}, Agent {agent_id}, Prior '{key}': "
-                                         f"Difference = {diff:.8f}")
+                        if mean_diff > 1e-6:
+                            logger.warning(f"  Posterior mean: 차이 = {mean_diff:.8f}")
                         else:
-                            logger.info(f"Step {step}, Agent {agent_id}, Prior '{key}': "
-                                      f"Results match (diff = {diff:.8f})")
+                            logger.info(f"  Posterior mean: 일치 (차이 = {mean_diff:.8f})")
+                        
+                        if std_diff > 1e-6:
+                            logger.warning(f"  Posterior std: 차이 = {std_diff:.8f}")
+                        else:
+                            logger.info(f"  Posterior std: 일치 (차이 = {std_diff:.8f})")
+                
+                except Exception as e:
+                    logger.warning(f"  분포 통계 비교 중 오류: {e}")
+                
+                logger.info(f"Step {step}, Agent {agent_id}: 비교 완료\n")
                             
         except Exception as e:
             logger.error(f"Error during result comparison: {e}")
