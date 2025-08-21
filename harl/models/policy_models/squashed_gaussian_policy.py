@@ -14,7 +14,7 @@ LOG_STD_MIN = -20
 class SquashedGaussianPolicy(nn.Module):
     """Squashed Gaussian policy network for HASAC."""
 
-    def __init__(self, args, obs_space, action_space, device=torch.device("cpu")):
+    def __init__(self, args, obs_space, action_space, wm_model=None, device=torch.device("cpu")):
         """Initialize SquashedGaussianPolicy model.
         Args:
             args: (dict) arguments containing relevant model information.
@@ -33,12 +33,18 @@ class SquashedGaussianPolicy(nn.Module):
                 obs_shape, hidden_sizes[0], activation_func
             )
             feature_dim = hidden_sizes[0]
-        else:
+        elif args["use_wm"] and not args["use_wm_with_obs"]:
+            self.feature_extractor = wm_model.encoder
+            if id(self.feature_extractor) != id(wm_model.encoder):
+                raise ValueError("wm_model.encoder and self.feature_extractor are not the same object")
+            feature_dim = self.feature_extractor.outdim
+        else:   # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
             self.feature_extractor = None
             feature_dim = obs_shape[0]  # feature dim: 인풋의 차원
+        
         act_dim = action_space.shape[0]
         self.net = PlainMLP(
-            [feature_dim] + list(hidden_sizes), activation_func, final_activation_func
+            [feature_dim] + list(hidden_sizes), activation_func, final_activation_func  # feature_dim: 에이전트 3개고, o^i_t다 보니 18차원.
         )   # hidden_sizes가 리스트가 아닌 경우도 있나 보다.
         self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
@@ -50,7 +56,7 @@ class SquashedGaussianPolicy(nn.Module):
         # Return output from network scaled to action space limits.
         if self.feature_extractor is not None:
             x = self.feature_extractor(obs)
-        else:
+        else:   # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
             x = obs
         net_out = self.net(x)   # 이게 진짜 재밌는게 256차원이 마지막 아웃풋인데, 마지막 activation function이 tanh이다. 
         mu = self.mu_layer(net_out)

@@ -23,6 +23,7 @@ class TwinContinuousQCritic:
         act_space,
         num_agents,
         state_type,
+        wm_models,
         device=torch.device("cpu"),
     ):
         """Initialize the critic."""
@@ -31,8 +32,8 @@ class TwinContinuousQCritic:
         self.num_agents = num_agents
         self.state_type = state_type
         self.action_type = act_space[0].__class__.__name__
-        self.critic = ContinuousQNet(args, share_obs_space, act_space, device)
-        self.critic2 = ContinuousQNet(args, share_obs_space, act_space, device)
+        self.critic = ContinuousQNet(args, share_obs_space, act_space, wm_models, device)
+        self.critic2 = ContinuousQNet(args, share_obs_space, act_space, wm_models, device)
         self.target_critic = deepcopy(self.critic)
         self.target_critic2 = deepcopy(self.critic2)
         for param in self.target_critic.parameters():

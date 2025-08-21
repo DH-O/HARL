@@ -591,7 +591,7 @@ class WM_Runner:
             # 버퍼가 비어있으면 기본값 반환
             return np.zeros((n_rollout_threads, self.num_agents, 1))
         
-        with torch.no_grad():
+        with torch.no_grad():   # 현재 에피소드의 데이터 중 step + 2 까지의 데이터를 사용함
             agent_obs = current_episode_data['obs_n'][:, :(step + 2), :, :]  # (n_rollout_threads, n_timesteps, n_agents, obs_dim)
             agent_actions_before = current_episode_data['a_n_before'][:, :(step + 2), :, :]  # (n_rollout_threads, n_timesteps, n_agents, action_dim)
             
@@ -608,22 +608,6 @@ class WM_Runner:
             else:
                 raise ValueError(f"step({step})이 0 미만입니다.")
             
-            # 기존 방식과 새로운 방식의 결과를 비교하기 위한 변수들
-            # old_post_results = []
-            # old_prior_results = []
-            # new_post_results = []
-            # new_prior_results = []
-            # old_kl_losses = []
-            # new_kl_losses = []
-            
-            # 기존 방식 (전체 시퀀스 처리)
-            # threads_o = torch.tensor(agent_obs, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, obs_dim)
-            # threads_a_before = torch.tensor(agent_actions_before, device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, n_timesteps + 1, action_dim)
-            
-            # threads_is_first = torch.zeros((n_rollout_threads, (step + 2), self.num_agents), device=self.device, dtype=torch.float32)
-            # threads_is_first[:, 0, :] = 1.0
-            # threads_is_first = threads_is_first.permute(0, 2, 1) # shape: (n_rollout_threads, n_agents, n_timesteps + 1)
-            
             # 새로운 방식 (단일 스텝 처리)
             threads_o_step = torch.tensor(agent_obs[:, step:(step + 2), :, :], device=self.device, dtype=torch.float32).permute(0, 2, 1, 3) # shape: (n_rollout_threads, n_agents, 2, obs_dim)
             threads_a_before_step = torch.tensor(agent_actions_before[:, step:(step + 2), :, :], device=self.device, dtype=torch.float32).permute(0, 2, 1, 3)  # (n_rollout_threads, n_agents, 2, action_dim)
@@ -634,36 +618,10 @@ class WM_Runner:
             
             int_rew = []
             for agent_id in range(self.num_agents):
-                # === 기존 방식 (전체 시퀀스 처리) ===
-                # wm_data_dict_old = {
-                #     'vector_obs': threads_o[:, agent_id, :, :],  # shape: (n_rollout_threads, n_timesteps + 1, obs_dim)
-                #     'action': threads_a_before[:, agent_id, :, :],  # shape: (n_rollout_threads, n_timesteps + 1, action_dim)
-                #     'is_first': threads_is_first[:, agent_id, :]  # shape: (n_rollout_threads, n_timesteps + 1)
-                # }
-                
-                # embed_old = self.wm_ls[agent_id].encoder(wm_data_dict_old)  # embed_old의 shape: (n_rollout_threads, 2, embed_size)
-                # # RSSM observe를 통한 prior와 posterior 계산 (현재까지의 시퀀스)
-                # post_old, prior_old = self.wm_ls[agent_id].dynamics.observe(
-                #     embed_old, 
-                #     threads_a_before[:, agent_id, :, :], 
-                #     threads_is_first[:, agent_id, :]
-                # )
-                
-                # KL loss 계산 (새로운 방식 사용)
+               # KL loss 계산
                 kl_free = self.tdd_args["wm"]["kl_free"]
                 dyn_scale = self.tdd_args["wm"]["dyn_scale"]
                 rep_scale = self.tdd_args["wm"]["rep_scale"]
-                
-                # 기존 방식의 KL loss 계산 (비교용)
-                # kl_loss_old, kl_value_old, dyn_loss_old, rep_loss_old = self.wm_ls[agent_id].dynamics.kl_loss(
-                #     post_old, prior_old, kl_free, dyn_scale, rep_scale
-                # )
-                
-                # === 새로운 방식 (단일 스텝 처리) ===
-                # agent_obs_step = threads_o_step[:, agent_id, :, :]  # (n_rollout_threads, 2, obs_dim)
-                # agent_obs_next_step = threads_o_step[:, agent_id, 1, :]  # (n_rollout_threads, obs_dim)
-                # agent_action_before_step = threads_a_before_step[:, agent_id, 1, :]  # (n_rollout_threads, action_dim)
-                # agent_is_first = is_first[:, agent_id]  # (n_rollout_threads,)
                 
                 # 인코더를 통한 임베딩 생성
                 wm_data_dict_new = {
@@ -677,8 +635,8 @@ class WM_Runner:
                 # 단일 스텝 observe 처리
                 post_step, prior_step = self.wm_ls[agent_id].dynamics.observe_step(
                     self.prev_states[agent_id],  # 이전 상태
-                    embed_step,                   # 현재 임베딩
-                    threads_a_before_step[:, agent_id, :, :],           # 현재 액션
+                    embed_step,                   # 현재 임베딩. e(o_t)랑 e(o_{t+1})일듯?
+                    threads_a_before_step[:, agent_id, :, :],           # a_{t-1}이랑 a_{t}가 있지 않을까
                     threads_is_first_step[:, agent_id]              # is_first 플래그
                 )
                 
@@ -693,26 +651,12 @@ class WM_Runner:
                 else:
                     int_rew = torch.cat([int_rew, kl_loss.unsqueeze(1)], dim=1)  # (n_rollout_threads, n_agents)
                 
-                # 결과 비교 및 저장
-                # old_post_results.append(post_old)
-                # old_prior_results.append(prior_old)
-                # new_post_results.append(post_step)
-                # new_prior_results.append(prior_step)
-                # old_kl_losses.append(kl_loss_old)
-                # new_kl_losses.append(kl_loss)
-                
                 # 다음 스텝을 위해 현재 상태 저장
                 self.prev_states[agent_id] = post_step
             
             # 최종 차원을 (n_rollout_threads, n_agents, 1)로 맞춤
             int_rew = int_rew.unsqueeze(-1)  # (n_rollout_threads, n_agents, 1)
             
-            # === 결과 비교 ===
-            # if step % 1 == 0:  # 100 스텝마다 비교 (성능상의 이유로)
-            #     self._compare_results(old_post_results, old_prior_results, 
-            #                        new_post_results, new_prior_results, 
-            #                        old_kl_losses, new_kl_losses, step)
-        
         # 로깅 (선택적)
         if step is not None and step % 1000 == 0:
             if self.tdd_args is not None and "logging" in self.tdd_args and self.tdd_args["logging"]["enable_logger_logging"]:

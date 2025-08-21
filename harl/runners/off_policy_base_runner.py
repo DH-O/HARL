@@ -241,20 +241,22 @@ class OffPolicyBaseRunner:
             self.actor = []
             for agent_id in range(self.num_agents):
                 agent = ALGO_REGISTRY[args["algo"]](
-                    {**algo_args["model"], **algo_args["algo"]},
+                    {**algo_args["model"], **algo_args["algo"], **tdd_args["wm"]},  # 기존 알고리즘과 달리 tdd_args["wm"] 추가
                     self.envs.observation_space[agent_id],
                     self.envs.action_space[agent_id],
+                    self.wm_runner.wm_ls[agent_id],  # 기존 알고리즘과 달리 wm_runner.wm_ls[agent_id] 추가
                     device=self.device,
                 )
                 self.actor.append(agent)
 
         if not self.algo_args["render"]["use_render"]:
             self.critic = CRITIC_REGISTRY[args["algo"]](    # 저렇게 해서 클래스를 가져온다.
-                {**algo_args["train"], **algo_args["model"], **algo_args["algo"]},
+                {**algo_args["train"], **algo_args["model"], **algo_args["algo"], **tdd_args["wm"]},
                 self.envs.share_observation_space[0],
                 self.envs.action_space,
                 self.num_agents,
                 self.state_type,
+                self.wm_runner.wm_ls,
                 device=self.device,
             )
 
@@ -587,39 +589,26 @@ class OffPolicyBaseRunner:
                                         step=step
                                     )
                     self.tdd_runner.rollout_buffer.clear()
-                    train_tdd_sac_flag = False
-                
-                if self.tdd_args["train"]["use_state_entropy"]:
-                    if len(self.tdd_runner.rollout_buffer.rollout_history[0]) * self.env_args["max_cycles"] > self.algo_args["train"]["train_interval"]: # (n_agents, n_trajs, n_rollout_steps, {'obs': (n_threads,2), 'next_obs': (n_threads,2), 'dones': (n_threads,)})
-                        if not train_tdd_sac_flag:
-                            step_start_tdd_sac = step
-                            train_tdd_sac_flag = True
-                        else:
-                            if (step - step_start_tdd_sac) % self.algo_args["train"]["train_interval"] == 0:
-                                for _ in range(update_num):
-                                    critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
-                                    self.writer.add_scalar("critic_loss", critic_loss, step)
-                                    self.writer.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
-                                    self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
-                                    self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
-                                    self.writer.add_scalar("alpha_loss", alpha_loss, step)
-                else:
-                    if step % self.algo_args["train"]["train_interval"] == 0 and step > 0:
-                        if self.algo_args["train"]["use_linear_lr_decay"]:  # False
-                                if self.share_param:
-                                    self.actor[0].lr_decay(step, steps)
-                                else:
-                                    for agent_id in range(self.num_agents):
-                                        self.actor[agent_id].lr_decay(step, steps)
-                                self.critic.lr_decay(step, steps)
-                        for _ in range(update_num):
-                            critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
-                            self.writer.add_scalar("critic_loss", critic_loss, step)
-                            self.writer.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
-                            self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
-                            self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
-                            self.writer.add_scalar("alpha_loss", alpha_loss, step)
+                # use_state_entropy 과감히 삭제함. 나중에 정 필요하면 시간을 거슬러 커밑을 통해 복구
+                if step % self.algo_args["train"]["train_interval"] == 0 and step > 0:  # train_interval은 100일때, batch_size가 1024다보니까 num_threads가 10이하면 문제가 생길 수 있다.
+                    for _ in range(update_num):
+                        critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
+                        self.writer.add_scalar("critic_loss", critic_loss, step)
+                        self.writer.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                        self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                        self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
+                        self.writer.add_scalar("alpha_loss", alpha_loss, step)
                 self.writer.add_scalar("rollout_history_count", rollout_history_count, step)
+            else:
+                if step % self.algo_args["train"]["train_interval"] == 0 and step > 0:
+                    # lr_decay 코드 삭제. 나중에 정 필요하면 시간을 거슬러 커밑을 통해 복구
+                    for _ in range(update_num):
+                        critic_loss, actor_loss_ls, alpha_loss = self.train(step)    # 여기서 HASAC의 train()이 호출된다.
+                        self.writer.add_scalar("critic_loss", critic_loss, step)
+                        self.writer.add_scalar("actor_loss/agent_0", actor_loss_ls[0], step)
+                        self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
+                        self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
+                        self.writer.add_scalar("alpha_loss", alpha_loss, step)
             
             if step % self.algo_args["train"]["eval_interval"] == 0 and step > 0:
                 print(f"rollout_history_count: {rollout_history_count}")
@@ -1235,14 +1224,15 @@ class OffPolicyBaseRunner:
                     rollout_data[eval_i][agent_id].append([xy_coords[0], xy_coords[1], cur_step])
 
             for agent_id in range(self.num_agents):
-                if self.tdd_args is not None and self.tdd_args["network"]["use_full_p_obs"]:
-                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
-                elif self.tdd_args["network"]["use_intra_obs"]:
-                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "dones": eval_dones.transpose(1, 0)[agent_id]})
-                elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :(2 + 2 + 2 * (self.num_agents))], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :(2 + 2 + 2 * (self.num_agents))], "dones": eval_dones.transpose(1, 0)[agent_id]})
-                else:
-                    temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                if self.tdd_args is not None:
+                    if self.tdd_args["network"]["use_full_p_obs"]:
+                        temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                    elif self.tdd_args["network"]["use_intra_obs"]:
+                        temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :4], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                    elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                        temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, :(2 + 2 + 2 * (self.num_agents))], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, :(2 + 2 + 2 * (self.num_agents))], "dones": eval_dones.transpose(1, 0)[agent_id]})
+                    else:
+                        temp_rollout_buffer[agent_id].append({"obs": eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "next_obs": next_eval_obs.transpose(1, 0, 2)[agent_id, :, 2:4], "dones": eval_dones.transpose(1, 0)[agent_id]})
             
             one_episode_len += 1
             eval_obs = next_eval_obs

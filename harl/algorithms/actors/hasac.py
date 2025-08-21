@@ -8,7 +8,7 @@ from harl.algorithms.actors.off_policy_base import OffPolicyBase
 
 
 class HASAC(OffPolicyBase):
-    def __init__(self, args, obs_space, act_space, device=torch.device("cpu")):
+    def __init__(self, args, obs_space, act_space, wm_model=None, device=torch.device("cpu")):
         self.tpdv = dict(dtype=torch.float32, device=device)
         self.polyak = args["polyak"]
         self.lr = args["lr"]
@@ -16,7 +16,7 @@ class HASAC(OffPolicyBase):
         self.action_type = act_space.__class__.__name__
 
         if act_space.__class__.__name__ == "Box":
-            self.actor = SquashedGaussianPolicy(args, obs_space, act_space, device)
+            self.actor = SquashedGaussianPolicy(args, obs_space, act_space, wm_model, device)
         else:
             self.actor = StochasticMlpPolicy(args, obs_space, act_space, device)
 

@@ -27,17 +27,27 @@ class ContinuousQNet(nn.Module):
     discrete action space.
     """
 
-    def __init__(self, args, cent_obs_space, act_spaces, device=torch.device("cpu")):
+    def __init__(self, args, cent_obs_space, act_spaces, wm_models, device=torch.device("cpu")):
         super(ContinuousQNet, self).__init__()
         activation_func = args["activation_func"]
         hidden_sizes = args["hidden_sizes"]
         cent_obs_shape = get_shape_from_obs_space(cent_obs_space)
+        self.use_wm = args["use_wm"]
+        self.use_wm_with_obs = args["use_wm_with_obs"]
+        
         if len(cent_obs_shape) == 3:
             self.feature_extractor = PlainCNN(
                 cent_obs_shape, hidden_sizes[0], activation_func
             )
             cent_obs_feature_dim = hidden_sizes[0]
-        else:
+        elif self.use_wm and not self.use_wm_with_obs:
+            self.feature_extractors = []
+            for wm_model in wm_models:
+                self.feature_extractors.append(wm_model.encoder)
+                if id(self.feature_extractors[-1]) != id(wm_model.encoder):
+                    raise ValueError("wm_model.encoder and self.feature_extractors[-1] are not the same object")
+            cent_obs_feature_dim = sum([feature_extractor.outdim for feature_extractor in self.feature_extractors])
+        else:   # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
             self.feature_extractor = None
             cent_obs_feature_dim = cent_obs_shape[0]
         sizes = (
@@ -51,7 +61,9 @@ class ContinuousQNet(nn.Module):
     def forward(self, cent_obs, actions):
         if self.feature_extractor is not None:
             feature = self.feature_extractor(cent_obs)
-        else:
+        elif self.use_wm and not self.use_wm_with_obs:
+            feature = torch.cat([feature_extractor(cent_obs) for feature_extractor in self.feature_extractors], dim=-1)
+        else:   # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
             feature = cent_obs
         concat_x = torch.cat([feature, actions], dim=-1)
         q_values = self.mlp(concat_x)

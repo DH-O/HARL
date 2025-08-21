@@ -70,7 +70,7 @@ class RSSM(nn.Module):
         self._img_out_layers.apply(tools.weight_init)
 
         obs_out_layers = []
-        inp_dim = self._deter + self._embed
+        inp_dim = self._deter + self._embed # h_t, x_t를 인풋으로 받기 위함. 우리 코드의 경우, h_t, o_t가 될 것이다.
         obs_out_layers.append(nn.Linear(inp_dim, self._hidden, bias=False))
         if norm:
             obs_out_layers.append(nn.LayerNorm(self._hidden, eps=1e-03))
@@ -254,7 +254,7 @@ class RSSM(nn.Module):
             stoch = self.get_dist(stats).sample()   # z^hat_t ~ p_phi(z^hat_t | h_t)
         else:
             stoch = self.get_dist(stats).mode()
-        prior = {"stoch": stoch, "deter": deter, **stats}   # {z^hat_t ~ p_phi(z^hat_t | h_t), h_t, mean, std}
+        prior = {"stoch": stoch, "deter": deter, **stats}   # {z^hat, h_t, mean, std}
         return prior
 
     def get_stoch(self, deter):

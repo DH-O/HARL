@@ -178,7 +178,7 @@ class TDDModel:
         """ 모든 에이전트에 대한 데이터 후처리 """
         for agent_id in range(len(data)):
             try:
-                obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)  # 에피소드 수가 300개일때 무슨 문제가 생기는 것 같다.
+                obss[agent_id] = np.array([[step['obs'] for step in episode] for episode in data[agent_id]], dtype=np.float32)
             except ValueError as e:
                 # shape 정보 수집
                 shapes = [
@@ -216,7 +216,8 @@ class TDDModel:
                 """ 각 스레드별로 traj_idx, step_idx를 랜덤하게 선택하고, 그 인덱스에 대한 obs와 goal을 추출한다. """
                 for thread_idx in range(n_threads[0]):
                     # Sample mini-batch data (positive pairs)
-                    traj_idx = torch.randint(n_trajs[0], (self.batch_size,), device=self.device)   # 0 ~ n_trajs-1 중 랜덤 선택
+                    traj_idx = torch.randint(n_trajs[0], (self.batch_size,), device=self.device)   # 0 ~ n_trajs-1 중 랜덤 선택. 
+                    # 중복 허용하여 뽑기 때문에, 초기에는 50개의 traj에서 1024번을 샘플링함. (max_cycles 500, n_rollout_threads 20, total_steps 10M, warmup_steps 0.5M 기준)
                     step_idx = torch.randint(n_cum_steps[0], (self.batch_size,), device=self.device)  # 0 ~ n_steps-1 중 랜덤 선택
                     intervals = discounted_sampling(
                         n_cum_steps[0] - step_idx, self.tdd_discount

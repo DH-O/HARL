@@ -21,11 +21,12 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
         act_space,
         num_agents,
         state_type,
+        wm_models,
         device=torch.device("cpu"),
     ):
         """Initialize the critic."""
         super(SoftTwinContinuousQCritic, self).__init__(
-            args, share_obs_space, act_space, num_agents, state_type, device
+            args, share_obs_space, act_space, num_agents, state_type, wm_models, device
         )
 
         self.tpdv_a = dict(dtype=torch.int64, device=device)

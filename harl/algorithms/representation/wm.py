@@ -16,7 +16,7 @@ class DreamerWorldModel(nn.Module):
         act_shape_for_net = action_spaces[0].shape[0]
         
         shapes_for_net = {'vector_obs': [obs_dim]}
-        self.encoder = MultiEncoder(shapes_for_net, **config["encoder"])
+        self.encoder = MultiEncoder(shapes_for_net, **config["encoder"], use_wm_with_obs=config["use_wm_with_obs"])
         self.embed_size = self.encoder.outdim
         
         self.dynamics = RSSM(
@@ -37,14 +37,14 @@ class DreamerWorldModel(nn.Module):
             self.device
         )
         self.heads = nn.ModuleDict()
-        if config["dyn_discrete"]:
+        if config["dyn_discrete"]:  # False임. 왜냐면 우리 코드에서는 디스크리트 액션을 사용하지 않기 때문이다.
             feat_size = config["dyn_stoch"] * config["dyn_discrete"] + config["dyn_deter"]
         else:
             feat_size = config["dyn_stoch"] + config["dyn_deter"]
         
         self.heads["decoder"] = MultiDecoder(
             feat_size, shapes_for_net, **config["decoder"]
-        )
+        )   # h_t, z_t를 인풋으로 받고 우리 코드의 경우 o_t를 출력.
         for name in config["grad_heads"]:
             assert name in self.heads, name
         self._model_opt = WM_Optimizer(

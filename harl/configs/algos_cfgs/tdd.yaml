@@ -84,6 +84,8 @@ logging:
 wm:
   # use wm
   use_wm: True
+  # use wm with obs
+  use_wm_with_obs: True
   # number of wm updates
   n_wm_updates: 120
   batch_size: 32

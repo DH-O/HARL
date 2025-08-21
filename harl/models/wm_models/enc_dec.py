@@ -16,6 +16,7 @@ class MultiEncoder(nn.Module):
         mlp_units,
         norm,
         symlog_inputs,
+        use_wm_with_obs,
         device="cuda",
     ):
         super(MultiEncoder, self).__init__()
@@ -30,35 +31,50 @@ class MultiEncoder(nn.Module):
             for k, v in shapes.items()
             if len(v) in (1, 2) and re.match(mlp_keys, k)
         }
-        print("Encoder MLP shapes:", self.mlp_shapes)
-
+        
         self.outdim = 0
         self.device = device
-        if self.mlp_shapes:
-            input_size = sum([sum(v) for v in self.mlp_shapes.values()])
-            self._mlp = MLP(
-                input_size,
-                None,   # 압축된 벡터로 변환하기 위해서 따로 디자인 하지 않음
-                mlp_layers,
-                mlp_units,
-                act,
-                norm,
-                symlog_inputs=symlog_inputs,
-                name="Encoder",
-                device=device,
-            )
-            self.outdim += mlp_units
+        self.use_wm_with_obs = use_wm_with_obs
+        
+        if self.use_wm_with_obs:    # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
+            self.outdim = shapes["vector_obs"][0]
+        else:
+            print("Encoder MLP shapes:", self.mlp_shapes)
+            if self.mlp_shapes:
+                input_size = sum([sum(v) for v in self.mlp_shapes.values()])
+                self._mlp = MLP(
+                    input_size,
+                    None,   # 압축된 벡터로 변환하기 위해서 따로 디자인 하지 않음
+                    mlp_layers,
+                    mlp_units,
+                    act,
+                    norm,
+                    symlog_inputs=symlog_inputs,
+                    name="Encoder",
+                    device=device,
+                )
+                self.outdim += mlp_units
 
     def forward(self, obs):
-        outputs = []
-        if self.mlp_shapes: # 여기서 MPE의 경우 'vector_obs'만 있다. obs는 딕셔너리며, action, is_first, mask도 있기 때문에 k in mlp_shapes를 통해 추출한다.
-            inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)   
-            # 예시를 들자면 self.mlp_shapes에 'vector_obs'뭐 이런거 있다 치면 값과 상관없이 key만 꺼내고, obs[k]의 shape은 아마 (batch_size, episode_len, 10) 이런식으로 되어있을거다.
-            # 그런데 key가 여러개고 각각의 obs_dim이 다르다고 치면, cat을 통해서 싹 다 더해가지고 결국 inputs의 shape은 (batch_size, episode_len, 10 + 10 + 10 + ...) 이런식으로 될거다.
-            outputs.append(self._mlp(inputs))
-        outputs = torch.cat(outputs, -1)
-        return outputs
-    
+        if not self.use_wm_with_obs:
+            outputs = []
+            if self.mlp_shapes: # 여기서 MPE의 경우 'vector_obs'만 있다. obs는 딕셔너리며, action, is_first, mask도 있기 때문에 k in mlp_shapes를 통해 추출한다.
+                inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)   
+                # 예시를 들자면 self.mlp_shapes에 'vector_obs'뭐 이런거 있다 치면 값과 상관없이 key만 꺼내고, obs[k]의 shape은 아마 (batch_size, episode_len, 10) 이런식으로 되어있을거다.
+                # 그런데 key가 여러개고 각각의 obs_dim이 다르다고 치면, cat을 통해서 싹 다 더해가지고 결국 inputs의 shape은 (batch_size, episode_len, 10 + 10 + 10 + ...) 이런식으로 될거다.
+                outputs.append(self._mlp(inputs))
+            outputs = torch.cat(outputs, -1)
+            return outputs
+        elif self.use_wm_with_obs:    # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
+            outputs = []
+            if self.mlp_shapes:
+                inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
+                outputs.append(inputs)
+            outputs = torch.cat(outputs, -1)
+            return outputs
+        else:
+            raise ValueError("use_wm_with_obs is not supported")
+        
 class MultiDecoder(nn.Module):
     def __init__(
         self,
