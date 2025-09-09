@@ -1050,10 +1050,12 @@ class OffPolicyBaseRunner:
             )
         if is_warmup:
             if self.tdd_args is not None and self.tdd_args["train"]["off_extrinsic_reward"]:
+                pass
             else:
                 self.buffer.insert(data)
         else:
             self.buffer.insert(data)
+        
         """ TDD update """
         if self.tdd_args is not None:
             if np.any(np.all(dones, axis=1)):
