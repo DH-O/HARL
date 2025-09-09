@@ -175,9 +175,9 @@ def get_grad_norm(parameters):
         sum_grad += parameter.grad.norm() ** 2
     return math.sqrt(sum_grad)
 
-def static_scan(fn, inputs, start): # inputs: (action, embed, is_first)
+def static_scan(fn, inputs, start, target_idx=None): # inputs: (action, embed, is_first)
     last = start
-    indices = range(inputs[0].shape[0]) # inputs[0]의 shape은 (n_timesteps, n_rollout_threads, action_dim)
+    indices = range(inputs[0].shape[0]) if target_idx is None else range(target_idx) # inputs[0]의 shape은 (n_timesteps, n_rollout_threads, action_dim)
     flag = True
     for index in indices:   # index: 0, 1, 2, ..., n_timesteps - 1
         inp = lambda x: (_input[x] for _input in inputs)

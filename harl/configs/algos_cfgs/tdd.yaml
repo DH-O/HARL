@@ -15,7 +15,11 @@ network:
   # use intra obs
   use_intra_obs: False
   # use partial obs without others
-  use_p_obs_without_others: True
+  use_p_obs_without_others: False
+  # use share obs
+  use_share_obs: True
+  # use hz actor
+  use_hz_actor: False
 
 tdd:
   # discount factor
@@ -57,8 +61,6 @@ train:
   # use only one buffer
   use_one_buffer: False
   
-  # use suppression reward
-  use_suppression_reward: False
   # use state entropy
   use_state_entropy: False
   # use actor entropy

@@ -80,13 +80,13 @@ class OffPolicyBufferEP(OffPolicyBufferBase):
                 ]
             )
 
-        # compute the indices along n steps
+        # compute the indices along n steps. 이걸 통해 예를 들어 indices에서 n_rollout_threads + n_step만큼 떨어진 인덱스를 찾는다.
         indices = [indice]
         for _ in range(self.n_step - 1):
             indices.append(self.next(indices[-1]))
 
         # get data at the last indice
-        sp_done = self.dones[indices[-1]]
+        sp_done = self.dones[indices[-1]]   # indices[-1]는 각 배치별 마지막 인덱스
         sp_term = self.terms[indices[-1]]
         sp_next_share_obs = self.next_share_obs[indices[-1]]
         sp_next_obs = np.array(
@@ -158,7 +158,8 @@ class OffPolicyBufferEP(OffPolicyBufferBase):
         End flag is True at the steps which are the end of an episode or the latest but unfinished steps.
         """
         self.unfinished_index = (
-            self.idx - np.arange(self.n_rollout_threads) - 1 + self.cur_size
-        ) % self.cur_size
+            self.idx - np.arange(self.n_rollout_threads) - 1 + self.cur_size    # n_rollout_threads * (train_interval + 1)
+        ) % self.cur_size   # self.cur_size는 n_rollout_threads * (train_interval + 1) 왜냐면 아직 버퍼사이즈를 초과 안 해서인가?
         self.end_flag = self.dones.copy().squeeze()  # (batch_size, )
-        self.end_flag[self.unfinished_index] = True
+        self.end_flag[self.unfinished_index] = True # self.unfinished_index의 shape는 (n_rollout_threads, )이며, 
+        # 이 짓거리를 하는 이유는 결국 하나의 리플레이 버퍼에 여러 개의 스레드의 데이터를 연속적으로 넣었기 때문이다.

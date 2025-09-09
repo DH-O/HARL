@@ -38,6 +38,9 @@ class SquashedGaussianPolicy(nn.Module):
             if id(self.feature_extractor) != id(wm_model.encoder):
                 raise ValueError("wm_model.encoder and self.feature_extractor are not the same object")
             feature_dim = self.feature_extractor.outdim
+        elif args["use_wm"] and args["use_wm_with_obs"] and args["use_hz_actor"]:
+            self.feature_extractor = None
+            feature_dim = args["dyn_deter"] + args["dyn_stoch"] # h_t의 크기, z_t의 크기를 따서 가져와야함
         else:   # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
             self.feature_extractor = None
             feature_dim = obs_shape[0]  # feature dim: 인풋의 차원

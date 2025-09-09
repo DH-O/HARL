@@ -7,54 +7,57 @@ from harl.utils.models_tools import RequiresGrad, WM_Optimizer
 
 to_np = lambda x: x.detach().cpu().numpy()
 class DreamerWorldModel(nn.Module):
-    def __init__(self, obs_dim, action_spaces, config):
+    def __init__(self, obs_dim, action_spaces, config_wm, config_network):
         super(DreamerWorldModel, self).__init__()
-        self._use_amp = True if config["precision"] == 16 else False
-        self._config = config
+        self._use_amp = True if config_wm["precision"] == 16 else False
+        self._config = config_wm
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.action_spaces = action_spaces
-        act_shape_for_net = action_spaces[0].shape[0]
+        if config_network["use_share_obs"]:
+            act_shape_for_net = action_spaces[0].shape[0] *len(action_spaces)   # 액션의 차원 * 에이전트의 수
+        else:
+            act_shape_for_net = action_spaces[0].shape[0]
         
         shapes_for_net = {'vector_obs': [obs_dim]}
-        self.encoder = MultiEncoder(shapes_for_net, **config["encoder"], use_wm_with_obs=config["use_wm_with_obs"])
+        self.encoder = MultiEncoder(shapes_for_net, **config_wm["encoder"], use_wm_with_obs=config_wm["use_wm_with_obs"])
         self.embed_size = self.encoder.outdim
         
         self.dynamics = RSSM(
-            config["dyn_stoch"],
-            config["dyn_deter"],
-            config["dyn_hidden"],
-            config["dyn_rec_depth"],
-            config["dyn_discrete"],
-            config["act"],
-            config["norm"],
-            config["dyn_mean_act"],
-            config["dyn_std_act"],
-            config["dyn_min_std"],
-            config["unimix_ratio"],
-            config["initial"],
+            config_wm["dyn_stoch"],
+            config_wm["dyn_deter"],
+            config_wm["dyn_hidden"],
+            config_wm["dyn_rec_depth"],
+            config_wm["dyn_discrete"],
+            config_wm["act"],
+            config_wm["norm"],
+            config_wm["dyn_mean_act"],
+            config_wm["dyn_std_act"],
+            config_wm["dyn_min_std"],
+            config_wm["unimix_ratio"],
+            config_wm["initial"],
             act_shape_for_net,
             self.embed_size,
             self.device
         )
         self.heads = nn.ModuleDict()
-        if config["dyn_discrete"]:  # False임. 왜냐면 우리 코드에서는 디스크리트 액션을 사용하지 않기 때문이다.
-            feat_size = config["dyn_stoch"] * config["dyn_discrete"] + config["dyn_deter"]
+        if config_wm["dyn_discrete"]:  # False임. 왜냐면 우리 코드에서는 디스크리트 액션을 사용하지 않기 때문이다.
+            feat_size = config_wm["dyn_stoch"] * config_wm["dyn_discrete"] + config_wm["dyn_deter"]
         else:
-            feat_size = config["dyn_stoch"] + config["dyn_deter"]
+            feat_size = config_wm["dyn_stoch"] + config_wm["dyn_deter"]
         
         self.heads["decoder"] = MultiDecoder(
-            feat_size, shapes_for_net, **config["decoder"]
-        )   # h_t, z_t를 인풋으로 받고 우리 코드의 경우 o_t를 출력.
-        for name in config["grad_heads"]:
+            feat_size, shapes_for_net, **config_wm["decoder"]
+        )   # h_t, z_t를 인풋으로 받고 우리 코드의 경우 o_t 출력
+        for name in config_wm["grad_heads"]:
             assert name in self.heads, name
         self._model_opt = WM_Optimizer(
             "model",
             self.parameters(),
-            config["model_lr"],
-            config["opt_eps"],
-            config["grad_clip"],
-            config["weight_decay"],
-            opt=config["opt"],
+            config_wm["model_lr"],
+            config_wm["opt_eps"],
+            config_wm["grad_clip"],
+            config_wm["weight_decay"],
+            opt=config_wm["opt"],
             use_amp=self._use_amp,
         )
         print(
@@ -109,7 +112,7 @@ class DreamerWorldModel(nn.Module):
                         if self._config["decode_role"]:
                             feat = torch.cat([feat, role_embed_dec.detach()], dim=-1) if role_embed_dec is not None else feat
                         feat = feat if grad_head else feat.detach()
-                        pred = head(feat)   # p_phi(x^hat_t | h_t, z_t)
+                        pred = head(feat)   # p_phi(x^hat_t | h_t, z_t). 우리 코드의 경우, o^hat_t를 출력
                         if type(pred) is dict:
                             preds.update(pred)
                         else:

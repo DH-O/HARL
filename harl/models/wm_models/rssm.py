@@ -23,7 +23,7 @@ class RSSM(nn.Module):
         num_actions=None,
         embed=None,
         device=None,
-        role_config = None
+        role_config=None
     ):
         super(RSSM, self).__init__()
         self._stoch = stoch
@@ -128,11 +128,8 @@ class RSSM(nn.Module):
 
     def observe_step(self, prev_state, embed, action, is_first):
         """단일 스텝 observe 처리 - 이전 상태를 받아서 새로운 상태를 반환"""
-        
-        if prev_state is None:
-            prev_state, _ = self.obs_step(prev_state, action[:, 0, :], embed[:, 0, :], is_first[:, 0])
-        # obs_step을 직접 호출하여 단일 스텝 처리
-        post, prior = self.obs_step(prev_state, action[:, 1, :], embed[:, 1, :], is_first[:, 1])
+        post, prior = self.obs_step(prev_state, action[:, 0, :], embed[:, 0, :], is_first[:, 0])    
+        # 이 때 action은 주로 (n_threads, 1, action_dim)이다. 그래서 (n_threads, 1, action_dim)이 아니라 (n_threads, action_dim)으로 변환되어서 들어간다.
         
         return post, prior
 
@@ -144,7 +141,7 @@ class RSSM(nn.Module):
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
         post, prior = tools.static_scan(
             lambda prev_state, prev_act, embed, is_first: self.obs_step(
-                prev_state[0], prev_act, embed, is_first
+                prev_state[0], prev_act, embed, is_first    # 여기서 prev_state[0]인 이유는 'posterior'를 가져오기 위함
             ),
             (action, embed, is_first),
             (state, state), # state는 오직 초기 상태 설정을 위함이라고 봐도 된다. (state, state)로 한건 불필요한 구현.
@@ -155,6 +152,53 @@ class RSSM(nn.Module):
         prior = {k: swap(v) for k, v in prior.items()}
         return post, prior
 
+    def observe_efficient(self, embed, action, is_first, target_idx=None, state=None):
+        """
+        target_idx: (batch_size, ) - 각 배치별로 관심 있는 인덱스
+        """
+        # 현재 배치에 있는 time idx중 최대값 산정
+        max_time_idx = torch.max(target_idx).item()
+        
+        # 필요한 부분만 자르기
+        truncated_embed = embed[:, :max_time_idx + 1, :]    # 자르기 전엔 (batch_size, n_timesteps, embed_size)
+        truncated_action = action[:, :max_time_idx + 1, :]
+        truncated_is_first = is_first[:, :max_time_idx + 1, :]
+        
+        """ 일단 차원부터 수정하고 """
+        swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
+        truncated_embed, truncated_action, truncated_is_first = swap(truncated_embed), swap(truncated_action), swap(truncated_is_first)
+        
+        post, prior = tools.static_scan(
+            lambda prev_state, prev_act, embed, is_first: self.obs_step(
+                prev_state[0], prev_act, embed, is_first
+            ),
+            (truncated_action, truncated_embed, truncated_is_first),
+            (state, state),
+            max_time_idx + 1
+        )
+        
+        batch_indices = torch.arange(action.shape[0], device=action.device)
+        
+        # 각 배치별로 target_idx-1과 target_idx에 해당하는 timestep을 가져오기
+        target_post = {}
+        target_prior = {}
+        
+        for k, v in post.items():
+            # v shape: (timesteps, batch_size, ...)
+            # 각 배치별로 [target_idx[i]-1, target_idx[i]] 인덱스의 값을 가져오기
+            t_minus_1 = v[target_idx - 1, batch_indices]  # (batch_size, ...)
+            t_current = v[target_idx, batch_indices]      # (batch_size, ...)
+            
+            # 두 timestep을 합쳐서 (batch_size, 2, ...) 형태로 만들기
+            target_post[k] = torch.stack([t_minus_1, t_current], dim=1)
+        
+        for k, v in prior.items():
+            t_minus_1 = v[target_idx - 1, batch_indices]
+            t_current = v[target_idx, batch_indices]
+            target_prior[k] = torch.stack([t_minus_1, t_current], dim=1)
+        
+        return target_post, target_prior
+    
     """ 추후 사용할 수도 있음 """
     # def imagine_with_action(self, action, state, role_embed = None):
     #     assert role_embed is not None if self.role_config is not None else True
@@ -189,9 +233,9 @@ class RSSM(nn.Module):
         return dist
 
     def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
-        """ 인코더 관련된 거의 모든 것 """
+        """rssm 한 스텝 관련된 거의 모든 것 """
         # initialize all prev_state
-        if prev_state == None or torch.sum(is_first) == len(is_first):  # Question: 왜 이렇게 초기화 하는거지?
+        if prev_state == None or torch.sum(is_first) == len(is_first):  # Question: torch.sum(is_first) == len(is_first)의 경우 멀티쓰레드라서 있다는건데 잘 이해는 안 간다.
             prev_state = self.initial(len(is_first))    # {'mean': [n_rollout_threads, stoch], 'std': [n_rollout_threads, stoch], 'stoch': [n_rollout_threads, stoch], 'deter': [n_rollout_threads, deter]}
             prev_action = torch.zeros((len(is_first), self._num_actions)).to(
                 self._device
@@ -224,7 +268,7 @@ class RSSM(nn.Module):
         else:
             stoch = self.get_dist(stats).mode()
         post = {"stoch": stoch, "deter": prior["deter"], **stats}   # {z_t ~ q_phi(z_t | h_t, x_t), h_t, mean, std}
-        return post, prior
+        return post, prior  # post와 prior에서 h_t 값들이 같은지 검증해볼 필요가 있다.
 
     def img_step(self, prev_state, prev_action, sample=True):
         """ 순차 모델 관련 """

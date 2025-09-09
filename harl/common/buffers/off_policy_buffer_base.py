@@ -103,7 +103,7 @@ class OffPolicyBufferBase:
             next_obs,
             next_available_actions,
         ) = data
-        length = share_obs.shape[0]
+        length = share_obs.shape[0] # n_rollout_threads
         if self.idx + length <= self.buffer_size:  # no overflow
             s = self.idx
             e = self.idx + length

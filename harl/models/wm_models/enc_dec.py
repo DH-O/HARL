@@ -79,7 +79,7 @@ class MultiDecoder(nn.Module):
     def __init__(
         self,
         feat_size,
-        shapes,
+        shapes, # 이게 아웃풋이면 좋겠는데
         act,
         mlp_keys,
         norm,

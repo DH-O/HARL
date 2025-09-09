@@ -7,27 +7,60 @@ from harl.runners.off_policy_base_runner import OffPolicyBaseRunner
 class OffPolicyHARunner(OffPolicyBaseRunner):
     """Runner for off-policy HA algorithms."""
 
-    def train(self, step=None):
-        """ Train the model """ # batch가 주로 1000이다
+    def train(self, step=None, use_rollout_buffer=False, rollout_buffer=None, wm_runner=None):
+        """ Train the model """ # batch가 주로 1000이다. rollout으로 할때는 한 128개만 일단 뽑아볼까?
         self.total_it += 1  # train 할때마다 하나씩 증가
-        data = self.buffer.sample()
-        (
-            sp_share_obs,  # EP: (batch_size, dim), FP: (n_agents * batch_size, dim)
-            sp_obs,  # (n_agents, batch_size, dim)  dim이 22인 이유는 에이전트가 3개, landmark가 3개, 벽이 2개 있으므로 (본인의 속도 2차원, 본인의 절대 좌표 2차원, 아군까지의 상대변위 4차원, 랜드마크까지의 상대변위 10차원, 통신값 4차원) 총 22차원이다.
-            sp_actions,  # (n_agents, batch_size, dim)
-            sp_available_actions,  # (n_agents, batch_size, dim)
-            sp_reward,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
-            sp_done,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
-            sp_valid_transition,  # (n_agents, batch_size, 1)
-            sp_term,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
-            sp_next_share_obs,  # EP: (batch_size, dim), FP: (n_agents * batch_size, dim)
-            sp_next_obs,  # (n_agents, batch_size, dim)
-            sp_next_available_actions,  # (n_agents, batch_size, dim)
-            sp_gamma,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
-        ) = data
-        # train critic
+        
+        """ use_rollout_buffer가 True인 경우, rollout_buffer를 사용하고, False인 경우, buffer를 사용한다. """
+        if use_rollout_buffer:
+            batch, max_episode_len = self.wm_runner.wm_buffer.sample(self.algo_args["algo"]["batch_size"])  # 실제 128개 뽑음. 롤아웃 갯수가 적으면 복원추출로 뽑음
+            step_idx = torch.randint(0, max_episode_len, (self.algo_args["algo"]["batch_size"],), device=self.device)
+            is_first = torch.zeros((self.algo_args["algo"]["batch_size"], max_episode_len), device=self.device).unsqueeze(-1)
+            is_first[:, 0] = 1.0
+            actions = batch['actions'].reshape(self.algo_args["algo"]["batch_size"], max_episode_len, -1)
+            target_post, _ = self.wm_runner.wm.dynamics.observe_efficient(batch['next_share_obs'], actions, is_first, step_idx)
+            batch_indices = torch.arange(actions.shape[0], device=actions.device)
+            
+            sp_share_h_t = target_post['deter'][:, 0, :]
+            sp_share_h_t_plus_1 = target_post['deter'][:, 1, :]
+            sp_share_z_t = target_post['stoch'][:, 0, :]
+            sp_share_z_t_plus_1 = target_post['stoch'][:, 1, :]
+            
+            sp_share_h_z_t = torch.cat([sp_share_h_t, sp_share_z_t], dim=-1)
+            sp_share_h_z_t_plus_1 = torch.cat([sp_share_h_t_plus_1, sp_share_z_t_plus_1], dim=-1)
+            
+            sp_obs = batch['obs'][batch_indices, step_idx, :, :].transpose(1, 0)    # transpose결과 (n_agents, batch_size, dim)이 된다.
+            sp_actions = batch['actions'][batch_indices, step_idx, :, :].transpose(1, 0)
+            sp_available_actions = batch['available_actions'][batch_indices, step_idx, :, :].transpose(1, 0)
+            sp_reward = batch['rewards'][batch_indices, step_idx, :]
+            sp_done = batch['dones'][batch_indices, step_idx, 0, :]
+            sp_valid_transition = batch['valid_transitions'][batch_indices, step_idx, :, :].transpose(1, 0)
+            sp_term = batch['terms'][batch_indices, step_idx, :]
+            # sp_next_share_obs = data['next_share_obs']
+            sp_next_obs = batch['next_obs'][batch_indices, step_idx, :, :].transpose(1, 0)
+            sp_next_available_actions = batch['next_available_actions'][batch_indices, step_idx, :, :].transpose(1, 0)
+            sp_gamma = torch.full((self.algo_args["algo"]["batch_size"], 1), self.algo_args["algo"]["gamma"], device=self.device, dtype=torch.float32)
+        else:
+            data = self.buffer.sample()
+            (
+                sp_share_obs,  # EP: (batch_size, dim), FP: (n_agents * batch_size, dim)
+                sp_obs,  # (n_agents, batch_size, dim)
+                sp_actions,  # (n_agents, batch_size, dim)
+                sp_available_actions,  # (n_agents, batch_size, dim)
+                sp_reward,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
+                sp_done,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
+                sp_valid_transition,  # (n_agents, batch_size, 1)
+                sp_term,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
+                sp_next_share_obs,  # EP: (batch_size, dim), FP: (n_agents * batch_size, dim)
+                sp_next_obs,  # (n_agents, batch_size, dim)
+                sp_next_available_actions,  # (n_agents, batch_size, dim)
+                sp_gamma,  # EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
+            ) = data
+        
+        """ train critic """
         self.critic.turn_on_grad()  # 부모 클래스의 마지막(twin_continuous_q_critic.py)에 있는 메소드. grad를 하나하나 켜준다.   
         if self.args["algo"] == "hasac":
+            """ actor을 이용하여 next_actions와 next_entropy_terms_critics를 구한다. """
             next_actions = []
             next_entropy_terms_critics = []
             for agent_id in range(self.num_agents):
@@ -58,7 +91,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         self.print_flag = False
                     next_entropy_terms_critics.append(next_logp_action)
             
-            # NaN 체크를 위한 디버깅 코드 추가
+            """ NaN 체크를 위한 디버깅 코드 추가 """
             
             # numpy 배열인 경우 텐서로 변환 후 체크
             def check_nan(data, name):
@@ -72,8 +105,6 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         return True
                 return False
             
-            if check_nan(sp_share_obs, "sp_share_obs"):
-                return None, None, None
             if check_nan(sp_actions, "sp_actions"):
                 return None, None, None
             if check_nan(sp_reward, "sp_reward"):
@@ -83,8 +114,6 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
             if check_nan(sp_valid_transition, "sp_valid_transition"):
                 return None, None, None
             if check_nan(sp_term, "sp_term"):
-                return None, None, None
-            if check_nan(sp_next_share_obs, "sp_next_share_obs"):
                 return None, None, None
             if check_nan(sp_gamma, "sp_gamma"):
                 return None, None, None
@@ -101,19 +130,34 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     return None, None, None
             
             """ 실제 크리틱 학습 하는 곳 -> soft_twin_continuous_q_critic.py로 간다. """
-            critic_loss = self.critic.train(
-                sp_share_obs,
+            if wm_runner is not None:
+                critic_loss = self.critic.train(
+                sp_share_h_z_t,
                 sp_actions,
                 sp_reward,
                 sp_done,
                 sp_valid_transition,
                 sp_term,
-                sp_next_share_obs,
+                sp_share_h_z_t_plus_1,
                 next_actions,
                 next_entropy_terms_critics,
                 sp_gamma,
                 self.value_normalizer,
             )
+            else:
+                critic_loss = self.critic.train(
+                    sp_share_obs,
+                    sp_actions,
+                    sp_reward,
+                    sp_done,
+                    sp_valid_transition,
+                    sp_term,
+                    sp_next_share_obs,
+                    next_actions,
+                    next_entropy_terms_critics,
+                    sp_gamma,
+                    self.value_normalizer,
+                )
         else:
             next_actions = []
             for agent_id in range(self.num_agents):
@@ -131,7 +175,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 sp_gamma,
             )
         self.critic.turn_off_grad()
-        sp_valid_transition = torch.tensor(sp_valid_transition, device=self.device) # 샘플링 된 에이전트들 생환 여부를 나타내는 텐서
+        # sp_valid_transition = torch.tensor(sp_valid_transition, device=self.device) # 샘플링 된 에이전트들 생환 여부를 나타내는 텐서
         if self.total_it % self.policy_freq == 0:   # policy_freq는 1로 설정되어 있다. 즉, 매번 policy를 업데이트 한다.
             # train actors
             if self.args["algo"] == "hasac":
@@ -200,7 +244,10 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         actions_t = torch.tile(
                             torch.cat(actions, dim=-1), (self.num_agents, 1)
                         )
-                    value_pred = self.critic.get_values(sp_share_obs, actions_t)    # 여기에 다른 에이전트들의 액션도 포함시키기 위해 아까 torch.no_grad()로 일단 액션을 먼저 구한 것
+                    if wm_runner is not None:
+                        value_pred = self.critic.get_values(sp_share_h_z_t, actions_t)    # 여기에 다른 에이전트들의 액션도 포함시키기 위해 아까 torch.no_grad()로 일단 액션을 먼저 구한 것
+                    else:
+                        value_pred = self.critic.get_values(sp_share_obs, actions_t)    # 여기에 다른 에이전트들의 액션도 포함시키기 위해 아까 torch.no_grad()로 일단 액션을 먼저 구한 것
                     if self.algo_args["algo"]["use_policy_active_masks"]:   # 이거 True
                         if self.state_type == "EP":
                             actor_loss = (
@@ -225,12 +272,14 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         actor_loss = -torch.mean(
                             value_pred - self.alpha[agent_id] * entropy_term_agent_wise
                         )
+                    """ 액터 업데이트 """
                     self.actor[agent_id].actor_optimizer.zero_grad()
                     actor_loss.backward()
                     self.actor[agent_id].actor_optimizer.step()
                     self.actor[agent_id].turn_off_grad()
                     actor_loss_ls[agent_id] = actor_loss.item()
-                    # train this agent's alpha
+                    
+                    """ 알파 업데이트 """
                     if self.algo_args["algo"]["auto_alpha"]:    # 이거 True
                         log_prob = (
                             entropy_terms_ls_actors[agent_id].detach() # 확률밀도 함수의 로그값
@@ -246,7 +295,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         alpha_losses.append(alpha_loss.item())
                     else:
                         alpha_losses.append(0.0)
-                    # Update actions for next iteration
+                    """ 다음 반복을 위한 액션 업데이트 """
                     actions[agent_id], _ = self.actor[
                         agent_id
                     ].get_actions_with_logprobs(
@@ -255,6 +304,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                         if sp_available_actions is not None
                         else None,
                     )
+                
                 # train critic's alpha
                 if self.algo_args["algo"]["auto_alpha"]:
                     if self.tdd_runner is not None and self.tdd_args["train"]["use_state_entropy"] and not self.tdd_args["train"]["use_actor_entropy"]:

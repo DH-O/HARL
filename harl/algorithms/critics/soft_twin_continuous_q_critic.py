@@ -93,49 +93,51 @@ class SoftTwinContinuousQCritic(TwinContinuousQCritic):
             gamma: EP: (batch_size, 1), FP: (n_agents * batch_size, 1)
             value_normalizer: (ValueNorm) normalize the rewards, denormalize critic outputs.
         """
-        assert share_obs.__class__.__name__ == "ndarray"
-        assert actions.__class__.__name__ == "ndarray"
-        assert reward.__class__.__name__ == "ndarray"
-        assert done.__class__.__name__ == "ndarray"
-        assert term.__class__.__name__ == "ndarray"
-        assert next_share_obs.__class__.__name__ == "ndarray"
-        assert gamma.__class__.__name__ == "ndarray"
+        # assert share_obs.__class__.__name__ == "ndarray"
+        # assert actions.__class__.__name__ == "ndarray"
+        # assert reward.__class__.__name__ == "ndarray"
+        # assert done.__class__.__name__ == "ndarray"
+        # assert term.__class__.__name__ == "ndarray"
+        # assert next_share_obs.__class__.__name__ == "ndarray"
+        # assert gamma.__class__.__name__ == "ndarray"
         """ 모든 에이전트들의 obs를 합친 share_obs와 모든 에이전트들의 action을 합친 actions를 만든다. """
-        share_obs = check(share_obs).to(**self.tpdv)
-        if self.action_type == "Box":
-            actions = check(actions).to(**self.tpdv)
-            actions = torch.cat([actions[i] for i in range(actions.shape[0])], dim=-1)  # 모든 에이전트들의 액션(5차원)들을 합친다. (15차원)
-        else:
-            actions = check(actions).to(**self.tpdv_a)
-            one_hot_actions = []
-            for agent_id in range(len(actions)):
-                if self.action_type == "MultiDiscrete":
-                    action_dims = self.act_space[agent_id].nvec
-                    one_hot_action = []
-                    for dim in range(len(action_dims)):
-                        one_hot = F.one_hot(
-                            actions[agent_id, :, dim], num_classes=action_dims[dim]
-                        )
-                        one_hot_action.append(one_hot)
-                    one_hot_action = torch.cat(one_hot_action, dim=-1)
-                else:
-                    one_hot_action = F.one_hot(
-                        actions[agent_id], num_classes=self.act_space[agent_id].n
-                    )
-                one_hot_actions.append(one_hot_action)
-            actions = torch.squeeze(torch.cat(one_hot_actions, dim=-1), dim=1).to(
-                **self.tpdv_a
-            )
+        # share_obs = check(share_obs).to(**self.tpdv)
+        # if self.action_type == "Box":
+        #     actions = check(actions).to(**self.tpdv)
+        #     actions = torch.cat([actions[i] for i in range(actions.shape[0])], dim=-1)  # 모든 에이전트들의 액션(5차원)들을 합친다. (15차원)
+        # else:
+        #     actions = check(actions).to(**self.tpdv_a)
+        #     one_hot_actions = []
+        #     for agent_id in range(len(actions)):
+        #         if self.action_type == "MultiDiscrete":
+        #             action_dims = self.act_space[agent_id].nvec
+        #             one_hot_action = []
+        #             for dim in range(len(action_dims)):
+        #                 one_hot = F.one_hot(
+        #                     actions[agent_id, :, dim], num_classes=action_dims[dim]
+        #                 )
+        #                 one_hot_action.append(one_hot)
+        #             one_hot_action = torch.cat(one_hot_action, dim=-1)
+        #         else:
+        #             one_hot_action = F.one_hot(
+        #                 actions[agent_id], num_classes=self.act_space[agent_id].n
+        #             )
+        #         one_hot_actions.append(one_hot_action)
+        #     actions = torch.squeeze(torch.cat(one_hot_actions, dim=-1), dim=1).to(
+        #         **self.tpdv_a
+        #     )
+        actions = actions.reshape(actions.shape[1], -1)
         if self.state_type == "FP":
             actions = torch.tile(actions, (self.num_agents, 1))
-        reward = check(reward).to(**self.tpdv)
-        done = check(done).to(**self.tpdv)
-        valid_transition = check(np.concatenate(valid_transition, axis=0)).to(  # 생존 여부만 나타내는 텐서.
-            **self.tpdv
-        )
-        term = check(term).to(**self.tpdv)
-        gamma = check(gamma).to(**self.tpdv)
-        next_share_obs = check(next_share_obs).to(**self.tpdv)
+        # reward = check(reward).to(**self.tpdv)
+        # done = check(done).to(**self.tpdv)
+        # valid_transition = check(np.concatenate(valid_transition, axis=0)).to(  # 생존 여부만 나타내는 텐서. n_agents, batch_size, 1을
+        #     **self.tpdv
+        # )
+        valid_transition = valid_transition.reshape(-1, valid_transition.shape[-1])
+        # term = check(term).to(**self.tpdv)
+        # gamma = check(gamma).to(**self.tpdv)
+        # next_share_obs = check(next_share_obs).to(**self.tpdv)
         if self.action_type == "Box":
             next_actions = torch.cat(next_actions, dim=-1).to(**self.tpdv)
         else:

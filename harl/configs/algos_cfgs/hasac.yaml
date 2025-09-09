@@ -21,7 +21,7 @@ train:
   # number of warmup steps
   warmup_steps: 500000 # 10^4이 원래 값이다. 1000 * max_cycles수로 진행중
   # number of steps per train
-  train_interval: 100
+  train_interval: 100 # HASAC 원코드에서는 50이었음
   # ratio of training iterations to train_interval
   update_per_train: 1
   # logging interval (currently unused)
@@ -80,7 +80,7 @@ algo:
   # off-policy buffer size
   buffer_size: 10000000  # 10^6을 주로 사용했으나 지금은 10^7
   # training batch size
-  batch_size: 1024 # 1000이 원래 값
+  batch_size: 256 # 1000이 원래 값
   # coefficient for target model soft update
   polyak: 0.005
   # the number of steps to look ahead
