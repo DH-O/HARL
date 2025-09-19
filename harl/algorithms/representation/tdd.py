@@ -224,8 +224,8 @@ class TDDModel:
                     )
                     
                     # 현재 상태와 다음 상태 추출 (특정 thread에 대해서만)
-                    obs = obss[agent_id][traj_idx, step_idx, thread_idx]  # (batch_size, 2)
-                    goal = next_obss[agent_id][traj_idx, step_idx + intervals, thread_idx]  # (batch_size, 2)
+                    obs = obss[agent_id][traj_idx, step_idx, thread_idx]  # (batch_size, 2) # 한 에이전트의 state 차원이 2차원
+                    goal = next_obss[agent_id][traj_idx, step_idx + intervals, thread_idx]  # (batch_size, 2) # 한 에이전트의 state 차원이 2차원
                     
                     # 네트워크 접근 방식 결정
                     if self.args["network"]["use_independent_nets"]:

@@ -458,7 +458,7 @@ class OffPolicyBaseRunner:
             (
                 new_obs,
                 new_share_obs,
-                rewards,
+                ext_rewards,
                 dones,
                 infos,
                 new_available_actions,
@@ -482,11 +482,12 @@ class OffPolicyBaseRunner:
             if self.tdd_args is not None:    
                 """ intrinsic reward 계수 계산 """
                 if self.tdd_args["train"]["coeff_stop_ratio"] == 0:
-                    int_rew_coeff = 1.0
+                    self.int_rew_coeff = 1.0
                 else:
                     if step <= (steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]:
                         # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
-                        int_rew_coeff = 1.0 - (step / ((steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]))
+                        self.int_rew_coeff = 1.0 - (step / ((steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]))
+                        self.int_rew_coeff = max(self.int_rew_coeff, 0.0) # 사실 if문때때
                 
                 if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
                     input_for_int = obs
@@ -515,14 +516,14 @@ class OffPolicyBaseRunner:
                 
                 if self.tdd_args["train"]["off_extrinsic_reward"]:
                     if self.tdd_args["wm"]["use_wm"]:
-                        rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.1 * wm_rew + int_rew)
+                        rewards = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.05 * wm_rew + 0.5 * int_rew)
                     else:
-                        rewards = int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                        rewards = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
                 else:
                     if self.tdd_args["wm"]["use_wm"]:
-                        rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.1 * wm_rew + int_rew)
+                        rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.05 * wm_rew + 0.5 * int_rew)
                     else:
-                        rewards += int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                        rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
             """ TDD intrinsic reward 끝 """
             
             next_share_obs = new_share_obs.copy()
@@ -621,6 +622,11 @@ class OffPolicyBaseRunner:
                         self.writer.add_scalar("actor_loss/agent_1", actor_loss_ls[1], step)
                         self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
                         self.writer.add_scalar("alpha_loss", alpha_loss, step)
+                        self.writer.add_scalar("int_rew_coeff", self.int_rew_coeff, step)
+                        if self.tdd_args["wm"]["use_wm"]:
+                            self.writer.add_scalar("max_wm_rew", wm_rew.max(), step)
+                        self.writer.add_scalar("max_int_rew", int_rew.max(), step)
+                        self.writer.add_scalar("max_reward", rewards.max(), step)
                 self.writer.add_scalar("rollout_history_count", rollout_history_count, step)
             else:
                 if step % self.algo_args["train"]["train_interval"] == 0 and step > 0:

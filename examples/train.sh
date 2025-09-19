@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max500_SDLearn6000_his5000_Pobs_AOR --use_exploration_metric 1 --use_tdd 1
+python train.py --algo hasac --env pettingzoo_mpe --exp_name N3_max500_SDLearn6000_his5000_Pobs_AOR_nwm60_CoeffUp2 --use_exploration_metric 1 --use_tdd 1
