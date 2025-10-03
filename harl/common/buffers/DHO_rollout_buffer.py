@@ -41,18 +41,19 @@ class TddRolloutBuffer:
                 self.prev_obs_shape = data["obs"][agent_id].shape
                 self.prev_next_obs_shape = data["next_obs"][agent_id].shape
                 self.prev_dones_shape = data["dones"][agent_id].shape
-                self.prev_share_obs_shape = data["share_obs"][agent_id].shape
-                self.prev_next_share_obs_shape = data["next_share_obs"][agent_id].shape
+                self.prev_share_obs_shape = data["share_obs"][agent_id].shape if self.args["network"]["use_share_obs"] else None
+                self.prev_next_share_obs_shape = data["next_share_obs"][agent_id].shape if self.args["network"]["use_share_obs"] else None
             else:
                 assert self.prev_obs_shape == data["obs"][agent_id].shape, f"Observation shape mismatch: {self.prev_obs_shape} != {data['obs'][agent_id].shape}"
                 assert self.prev_next_obs_shape == data["next_obs"][agent_id].shape, f"Next observation shape mismatch: {self.prev_next_obs_shape} != {data['next_obs'][agent_id].shape}"
-                assert self.prev_dones_shape == data["dones"][agent_id].shape, f"Dones shape mismatch: {self.prev_dones_shape} != {data['dones'][agent_id].shape}"  
-                assert self.prev_share_obs_shape == data["share_obs"][agent_id].shape, f"Share observation shape mismatch: {self.prev_share_obs_shape} != {data['share_obs'][agent_id].shape}"
-                assert self.prev_next_share_obs_shape == data["next_share_obs"][agent_id].shape, f"Next share observation shape mismatch: {self.prev_next_share_obs_shape} != {data['next_share_obs'][agent_id].shape}"
+                assert self.prev_dones_shape == data["dones"][agent_id].shape, f"Dones shape mismatch: {self.prev_dones_shape} != {data['dones'][agent_id].shape}"
+                if self.args["network"]["use_share_obs"]:
+                    assert self.prev_share_obs_shape == data["share_obs"][agent_id].shape, f"Share observation shape mismatch: {self.prev_share_obs_shape} != {data['share_obs'][agent_id].shape}"
+                    assert self.prev_next_share_obs_shape == data["next_share_obs"][agent_id].shape, f"Next share observation shape mismatch: {self.prev_next_share_obs_shape} != {data['next_share_obs'][agent_id].shape}"
             self.current_rollout_states[agent_id].append(
-                {"share_obs": data["share_obs"][agent_id],
+                {"share_obs": data["share_obs"][agent_id] if self.args["network"]["use_share_obs"] else None,
                  "obs": data["obs"][agent_id],
-                 "next_share_obs": data["next_share_obs"][agent_id],
+                 "next_share_obs": data["next_share_obs"][agent_id] if self.args["network"]["use_share_obs"] else None,
                  "next_obs": data["next_obs"][agent_id], 
                  "dones": data["dones"][agent_id]
                  })
@@ -76,10 +77,6 @@ class WmRolloutBuffer:
     def __init__(self, args, x_dim, action_spaces, num_agents=3, n_rollout_threads=20, device=torch.device("cpu")):
         self.args = args
         self.num_agents = num_agents
-        if self.args["network"]["use_share_obs"]:
-            self.obs_shape = x_dim // self.num_agents
-        else:
-            self.obs_shape = x_dim
         self.n_rollout_threads = n_rollout_threads
         self.device = device
         self.action_spaces = action_spaces
@@ -87,17 +84,8 @@ class WmRolloutBuffer:
         """ WM 관련 """
         self.buffer_size = self.args["wm"]["buffer_size"]
         self.episode_limit = self.args["max_cycles"]
-        if self.args["network"]["use_full_p_obs"]:
-            self.obs_s = self.obs_shape
-        elif self.args["network"]["use_intra_obs"]:
-            self.obs_s = 4
-        elif self.args["network"]["use_p_obs_without_others"]:
-            self.obs_s = 2 + 2 + 2 * (self.num_agents)
-        elif self.args["network"]["use_share_obs"]:
-            self.obs_s = self.obs_shape
-            self.share_obs_s = self.obs_shape * self.num_agents
-        else:
-            self.obs_s = 2
+        self.share_obs_s = x_dim
+        self.obs_s = x_dim // self.num_agents
         self.episode_num = 0
         self.current_size = 0
         

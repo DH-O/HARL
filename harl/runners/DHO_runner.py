@@ -506,82 +506,47 @@ class WM_Runner:
                 self.algo_args["train"]["n_rollout_threads"],
                 self.device
         )
-        if self.tdd_args["network"]["use_share_obs"]:
-            self.wm = DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"], self.tdd_args["network"]).to(self.device)
-            self.target_wm = DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"], self.tdd_args["network"]).to(self.device)
-            self.prev_states = None
-        else:
-            self.wm_ls = [
-                DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"]).to(self.device) for _ in range(self.num_agents)
-            ]
-            self.target_wm_ls = [
-                DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"]).to(self.device) for _ in range(self.num_agents)
-            ]
-            # 상태 저장을 위한 변수들 추가
-            self.prev_states = [None for _ in range(self.num_agents)]  # 각 에이전트별 이전 상태 저장
+        self.wm = DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"], self.tdd_args["network"]).to(self.device)
+        self.target_wm = DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"], self.tdd_args["network"]).to(self.device)
+        self.prev_states = None
+        # else:
+        #     self.wm_ls = [
+        #         DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"]).to(self.device) for _ in range(self.num_agents)
+        #     ]
+        #     self.target_wm_ls = [
+        #         DreamerWorldModel(wm_x_dim, action_spaces, self.tdd_args["wm"]).to(self.device) for _ in range(self.num_agents)
+        #     ]
+        #     # 상태 저장을 위한 변수들 추가
+        #     self.prev_states = [None for _ in range(self.num_agents)]  # 각 에이전트별 이전 상태 저장
         
     def train_wm(self, rollout_buffer, soft_update=True):
         batch, _ = rollout_buffer.sample(self.tdd_args["wm"]["batch_size"])
-        
-        if self.tdd_args["network"]["use_share_obs"]:
-            batch_o = batch['share_obs'].to(self.device)    # shape: (batch_size, n_timesteps, n_agents, share_obs_dim)
-        else:
-            batch_o = batch['obs'].to(self.device)    # shape: (batch_size, n_timesteps, n_agents, obs_dim)
+        batch_o = batch['share_obs'].to(self.device)    # shape: (batch_size, n_timesteps, n_agents, share_obs_dim)
         
         batch_a_before = batch['a_before'].to(self.device)
         batch_active = batch['active'].to(self.device)  # shape: (batch_size, n_timesteps, 1)
         
-        if self.tdd_args["network"]["use_share_obs"]:
-            batch_size, n_timesteps_plus_1, share_obs_dim = batch_o.shape
-            is_first = torch.zeros(batch_size, n_timesteps_plus_1, device=self.device)  # shape: (batch_size, n_timesteps)
-            is_first[:, 0] = 1.0
-            batch_a_before = batch_a_before.reshape(batch_size, n_timesteps_plus_1, -1)
-            batch_active = batch_active.squeeze(-1)
-            # batch_active = torch.cat([batch_active, batch_active[:, -1:]], dim=1)  # shape: (batch_size, n_timesteps + 1)
-        else:
-            batch_size, n_timesteps_plus_1, n_agents, obs_dim = batch_o.shape
-            is_first = torch.zeros(batch_size, n_timesteps_plus_1, n_agents, device=self.device)  # shape: (batch_size, n_timesteps + 1, n_agents)
-            is_first[:, 0, :] = 1.0
-            batch_o = batch_o.permute(0, 2, 1, 3) # shape: (batch_size, n_agents, n_timesteps + 1, obs_dim)
-            batch_a_before = batch_a_before.permute(0, 2, 1, 3) # shape: (batch_size, n_agents, n_timesteps + 1, action_dim)
-            is_first = is_first.permute(0, 2, 1)   # shape: (batch_size, n_agents, n_timesteps + 1)
-            batch_active = batch_active.expand(-1, -1, n_agents)  # shape: (batch_size, n_timesteps, n_agents)
-            batch_active = torch.cat([batch_active, batch_active[:, -1:, :]], dim=1)  # shape: (batch_size, n_timesteps + 1, n_agents)
         
-        if self.tdd_args["network"]["use_share_obs"]:
-            wm_data_dict = {
-                'vector_obs': batch_o,
-                'action': batch_a_before,
-                'is_first': is_first,
-                'mask': batch_active
-            }
-            _, _, metrics = self.wm._train(wm_data_dict)
-            metrics = {f'wm/{k}':np.mean(v) for k,v in metrics.items()}
-            metrics_ls = [metrics]
-            
-            if soft_update:
-                self.soft_update_params(self.wm, self.target_wm, self.tdd_args["wm"]["dyna_tau"])
-            else:
-                self.target_wm.load_state_dict(self.wm.state_dict())
-        else:
-            metrics_ls = []
-            for agent_id in range(self.num_agents):
-                wm_data_dict = {
-                    'vector_obs': batch_o[:, agent_id, :, :],
-                    'action': batch_a_before[:, agent_id, :, :],
-                    'is_first': is_first[:, agent_id, :],
-                    'mask': batch_active[:, :, agent_id] # shape: (batch_size, n_timesteps + 1)
-                }
-                _, _, metrics = self.wm_ls[agent_id]._train(wm_data_dict)
-                metrics = {f'wm/{k}':np.mean(v) for k,v in metrics.items()}
-                metrics_ls.append(metrics)
+        batch_size, n_timesteps_plus_1, share_obs_dim = batch_o.shape
+        is_first = torch.zeros(batch_size, n_timesteps_plus_1, device=self.device)  # shape: (batch_size, n_timesteps)
+        is_first[:, 0] = 1.0
+        batch_a_before = batch_a_before.reshape(batch_size, n_timesteps_plus_1, -1)
+        batch_active = batch_active.squeeze(-1)
         
-            if soft_update:
-                for agent_id in range(self.num_agents):
-                    self.soft_update_params(self.wm_ls[agent_id], self.target_wm_ls[agent_id], self.tdd_args["wm"]["dyna_tau"])
-            else:
-                for agent_id in range(self.num_agents):
-                    self.target_wm_ls[agent_id].load_state_dict(self.wm_ls[agent_id].state_dict())
+        wm_data_dict = {
+            'vector_obs': batch_o,
+            'action': batch_a_before,
+            'is_first': is_first,
+            'mask': batch_active
+        }
+        _, _, metrics = self.wm._train(wm_data_dict)
+        metrics = {f'wm/{k}':np.mean(v) for k,v in metrics.items()}
+        metrics_ls = [metrics]
+        
+        if soft_update:
+            self.soft_update_params(self.wm, self.target_wm, self.tdd_args["wm"]["dyna_tau"])
+        else:
+            self.target_wm.load_state_dict(self.wm.state_dict())
             
         return metrics_ls
 
@@ -689,7 +654,7 @@ class WM_Runner:
         
         return hz_ls
     
-    def compute_wm_int_rew(self, wm_input_t, new_obs, actions, temp_wm_buffer=None, n_rollout_threads=None, step=None):
+    def compute_wm_int_rew(self, wm_input_t, actions, temp_wm_buffer=None, n_rollout_threads=None, step=None):
         """World Model 기반 intrinsic reward 계산 - 단일 스텝 처리 방식
         
         Args:
@@ -724,72 +689,33 @@ class WM_Runner:
             
             int_rew = torch.zeros((n_rollout_threads, self.num_agents, 1), device=self.device, dtype=torch.float32)
             
-            if self.tdd_args["network"]["use_share_obs"]:
-                threads_o = torch.tensor(wm_input_t.reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)
-                threads_is_first = torch.zeros((n_rollout_threads, 1), device=self.device, dtype=torch.float32)
-                if step == 0:
-                    threads_is_first[:, 0] = 1.0
-                    threads_a_before = torch.zeros((n_rollout_threads, 1, actions.shape[2] * self.num_agents), device=self.device, dtype=torch.float32)
-                else:
-                    threads_a_before = torch.tensor(self.wm_buffer.current_buffer['a_before'][:, step, :, :].reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)    
-                
-                wm_data_dict_new = {
-                    'vector_obs': threads_o,  # (n_rollout_threads, 1, obs_dim)
-                    'action': threads_a_before,    # (n_rollout_threads, 1, action_dim)
-                    'is_first': threads_is_first  # (n_rollout_threads,)
-                }
-                embed_step = self.wm.encoder(wm_data_dict_new)  # (n_rollout_threads, 1, embed_size)
-                
-                # 단일 스텝 observe 처리
-                post_step, prior_step = self.wm.dynamics.observe_step( # post_step: z_t, prior_step: z^hat_t
-                    self.prev_states,  # 이전 상태
-                    embed_step,                   # 현재 임베딩. 우리 코드의 경우 그냥 obs (n_rollout_threads, 1, obs_size)
-                    threads_a_before,           # a_{t-1}
-                    threads_is_first              # is_first 플래그
-                )
-                kl_loss, kl_value, dyn_loss, rep_loss = self.wm.dynamics.kl_loss(
-                    post_step, prior_step, kl_free, dyn_scale, rep_scale
-                )
-                int_rew[:, :, 0] = kl_loss.view(-1, 1).expand(-1, self.num_agents)
-                self.prev_states = post_step
+            threads_o = torch.tensor(wm_input_t.reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)
+            threads_is_first = torch.zeros((n_rollout_threads, 1), device=self.device, dtype=torch.float32)
+            if step == 0:
+                threads_is_first[:, 0] = 1.0
+                threads_a_before = torch.zeros((n_rollout_threads, 1, actions.shape[2] * self.num_agents), device=self.device, dtype=torch.float32)
             else:
-                threads_o = torch.tensor(wm_input_t.reshape(n_rollout_threads, 1, self.num_agents, -1), device=self.device, dtype=torch.float32).permute(0, 2, 1, 3)
-                threads_is_first = torch.zeros((n_rollout_threads, 1, self.num_agents), device=self.device, dtype=torch.float32)
+                threads_a_before = torch.tensor(self.wm_buffer.current_buffer['a_before'][:, step, :, :].reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)    
             
-                if step == 0:
-                    threads_is_first[:, 0] = 1.0
-                    threads_a_before = torch.zeros((n_rollout_threads, 1, self.num_agents, actions.shape[2]), device=self.device, dtype=torch.float32).permute(0, 2, 1, 3)
-                else:
-                    threads_a_before = torch.tensor(self.wm_buffer.current_buffer['a_before'][:, step, :, :].reshape(n_rollout_threads, 1, self.num_agents, -1), device=self.device, dtype=torch.float32).permute(0, 2, 1, 3)    
-                threads_is_first = threads_is_first.permute(0, 2, 1) # shape: (n_rollout_threads, n_agents, 1)
-                
-                for agent_id in range(self.num_agents):
-                # 인코더를 통한 임베딩 생성
-                    wm_data_dict_new = {
-                        'vector_obs': threads_o[:, agent_id, :, :],  # (n_rollout_threads, 2, obs_dim)
-                        'action': threads_a_before[:, agent_id, :, :],    # (n_rollout_threads, 2, action_dim)
-                        'is_first': threads_is_first[:, agent_id]  # (n_rollout_threads,)
-                    }
-
-                    embed_step = self.wm_ls[agent_id].encoder(wm_data_dict_new)  # (n_rollout_threads, 2, embed_size)
-                    
-                    post_step, prior_step = self.wm_ls[agent_id].dynamics.observe_step( # post_step: z_t, prior_step: z^hat_t
-                        self.prev_states[agent_id],  # 이전 상태
-                        embed_step,                   # 현재 임베딩. 우리 코드의 경우 그냥 obs (n_rollout_threads, 1, obs_size)
-                        threads_a_before[:, agent_id, :, :],           # a_{t-1}이랑 a_{t}가 있지 않을까
-                        threads_is_first[:, agent_id]              # is_first 플래그
-                    )
-                    
-                    kl_loss, kl_value, dyn_loss, rep_loss = self.wm_ls[agent_id].dynamics.kl_loss(
-                        post_step, prior_step, kl_free, dyn_scale, rep_scale
-                    )
-                
-                    # intrinsic reward는 각 스레드별 KL loss (평균 내지 않음)
-                    # kl_loss shape: (n_rollout_threads,) - 각 스레드별 개별 KL loss
-                    int_rew[:, agent_id, 0] = kl_loss
+            wm_data_dict_new = {
+                'vector_obs': threads_o,  # (n_rollout_threads, 1, obs_dim)
+                'action': threads_a_before,    # (n_rollout_threads, 1, action_dim)
+                'is_first': threads_is_first  # (n_rollout_threads,)
+            }
+            embed_step = self.wm.encoder(wm_data_dict_new)  # (n_rollout_threads, 1, embed_size)
             
-                    # 다음 스텝을 위해 현재 상태 저장
-                    self.prev_states[agent_id] = post_step
+            # 단일 스텝 observe 처리
+            post_step, prior_step = self.wm.dynamics.observe_step( # post_step: z_t, prior_step: z^hat_t
+                self.prev_states,  # 이전 상태
+                embed_step,                   # 현재 임베딩. 우리 코드의 경우 그냥 obs (n_rollout_threads, 1, obs_size)
+                threads_a_before,           # a_{t-1}
+                threads_is_first              # is_first 플래그
+            )
+            kl_loss, kl_value, dyn_loss, rep_loss = self.wm.dynamics.kl_loss(
+                post_step, prior_step, kl_free, dyn_scale, rep_scale
+            )
+            int_rew[:, :, 0] = kl_loss.view(-1, 1).expand(-1, self.num_agents)
+            self.prev_states = post_step
             
         # 로깅 (선택적)
         if step is not None and step % 1000 == 0:

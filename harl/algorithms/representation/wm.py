@@ -13,10 +13,7 @@ class DreamerWorldModel(nn.Module):
         self._config = config_wm
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.action_spaces = action_spaces
-        if config_network["use_share_obs"]:
-            act_shape_for_net = action_spaces[0].shape[0] *len(action_spaces)   # 액션의 차원 * 에이전트의 수
-        else:
-            act_shape_for_net = action_spaces[0].shape[0]
+        act_shape_for_net = action_spaces[0].shape[0] *len(action_spaces)   # 액션의 차원 * 에이전트의 수
         
         shapes_for_net = {'vector_obs': [obs_dim]}
         self.encoder = MultiEncoder(shapes_for_net, **config_wm["encoder"], use_wm_with_obs=config_wm["use_wm_with_obs"])

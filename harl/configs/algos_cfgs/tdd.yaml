@@ -1,7 +1,7 @@
 # Network Architecture Parameters
 network:
   # input feature dimension
-  input_dim: 2
+  # input_dim: 2 이렇게 해도 될 것 같은데
   # latent dimension
   latents_dim: 128
   # output dimension
@@ -13,11 +13,11 @@ network:
   # use full partial observation
   use_full_p_obs: False
   # use intra obs
-  use_intra_obs: False
+  use_intra_obs: True
   # use partial obs without others
   use_p_obs_without_others: False
   # use share obs
-  use_share_obs: True
+  use_share_obs: False
   # use hz actor
   use_hz_actor: False
 
@@ -47,7 +47,7 @@ train:
   # use updated inter-agent intrinsic reward
   use_updated_inter: False
   # coeff for inter-agent intrinsic reward
-  coeff_inter_agent_int_rew: 0
+  coeff_inter_agent_int_rew: 0.5
   # off the extrinsic reward
   off_extrinsic_reward: False
   # update interval of rollout history
@@ -88,6 +88,8 @@ wm:
   use_wm: True
   # use wm with obs
   use_wm_with_obs: True
+  # use wm without Q
+  use_wm_with_Q: False
   # number of wm updates
   n_wm_updates: 60  # 120이 원래 값이다.
   batch_size: 32

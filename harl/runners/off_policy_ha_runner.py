@@ -17,7 +17,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
             step_idx = torch.randint(0, max_episode_len, (self.algo_args["algo"]["batch_size"],), device=self.device)
             is_first = torch.zeros((self.algo_args["algo"]["batch_size"], max_episode_len), device=self.device).unsqueeze(-1)
             is_first[:, 0] = 1.0
-            actions = batch['actions'].reshape(self.algo_args["algo"]["batch_size"], max_episode_len, -1)
+            actions = batch['actions'].reshape(self.algo_args["algo"]["batch_size"], -1, (self.num_agents * self.action_spaces[0].shape[0]))
             target_post, _ = self.wm_runner.wm.dynamics.observe_efficient(batch['next_share_obs'], actions, is_first, step_idx)
             batch_indices = torch.arange(actions.shape[0], device=actions.device)
             
@@ -58,7 +58,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
             ) = data
         
         """ train critic """
-        self.critic.turn_on_grad()  # 부모 클래스의 마지막(twin_continuous_q_critic.py)에 있는 메소드. grad를 하나하나 켜준다.   
+        self.critic.turn_on_grad()  # 부모 클래스의 마지막(twin_continuous_q_critic.py)에 있는 메소드. grad를 하나하나 켜준다.
         if self.args["algo"] == "hasac":
             """ actor을 이용하여 next_actions와 next_entropy_terms_critics를 구한다. """
             next_actions = []
@@ -79,16 +79,6 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
                     next_entropy_terms_critics.append(-self.tdd_runner.calculate_central_state_entropy(sp_next_obs[agent_id], agent_id, step).unsqueeze(-1))
                 else:
-                    if self.print_flag:
-                        if self.tdd_runner is not None:
-                            print(
-                                f"TDD is used, non calculate central state entropy."
-                            )
-                        else:
-                            print(
-                                f"TDD is not used, non calculate central state entropy."
-                            )
-                        self.print_flag = False
                     next_entropy_terms_critics.append(next_logp_action)
             
             """ NaN 체크를 위한 디버깅 코드 추가 """
@@ -130,7 +120,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     return None, None, None
             
             """ 실제 크리틱 학습 하는 곳 -> soft_twin_continuous_q_critic.py로 간다. """
-            if wm_runner is not None:
+            if use_rollout_buffer:
                 critic_loss = self.critic.train(
                 sp_share_h_z_t,
                 sp_actions,
@@ -157,6 +147,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     next_entropy_terms_critics,
                     sp_gamma,
                     self.value_normalizer,
+                    use_rollout_buffer
                 )
         else:
             next_actions = []
@@ -175,7 +166,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                 sp_gamma,
             )
         self.critic.turn_off_grad()
-        # sp_valid_transition = torch.tensor(sp_valid_transition, device=self.device) # 샘플링 된 에이전트들 생환 여부를 나타내는 텐서
+        sp_valid_transition = torch.tensor(sp_valid_transition, device=self.device) # 샘플링 된 에이전트들 생환 여부를 나타내는 텐서
         if self.total_it % self.policy_freq == 0:   # policy_freq는 1로 설정되어 있다. 즉, 매번 policy를 업데이트 한다.
             # train actors
             if self.args["algo"] == "hasac":

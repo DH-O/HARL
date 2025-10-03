@@ -34,6 +34,7 @@ class ContinuousQNet(nn.Module):
         cent_obs_shape = get_shape_from_obs_space(cent_obs_space)
         self.use_wm = args["use_wm"]
         self.use_wm_with_obs = args["use_wm_with_obs"]
+        self.use_wm_with_Q = args["use_wm_with_Q"]
         
         if len(cent_obs_shape) == 3:
             self.feature_extractor = PlainCNN(
@@ -47,7 +48,7 @@ class ContinuousQNet(nn.Module):
                 if id(self.feature_extractors[-1]) != id(wm_model.encoder):
                     raise ValueError("wm_model.encoder and self.feature_extractors[-1] are not the same object")
             cent_obs_feature_dim = sum([feature_extractor.outdim for feature_extractor in self.feature_extractors])
-        elif self.use_wm and self.use_wm_with_obs:
+        elif self.use_wm and self.use_wm_with_obs and self.use_wm_with_Q:
             self.feature_extractor = None
             cent_obs_feature_dim = (args["dyn_deter"] + args["dyn_stoch"])
         else:   # 이 경우, 인코더를 사용하지 않고 o_t를 그대로 토스해줌
