@@ -82,7 +82,7 @@ class ShareVecEnv(ABC):
         pass
 
     @abstractmethod
-    def step_async(self, actions):
+    def step_async(self, actions, episode_step):
         """
         Tell all the environments to start taking a step
         with the given actions.
@@ -122,13 +122,13 @@ class ShareVecEnv(ABC):
         self.close_extras()
         self.closed = True
 
-    def step(self, actions):
+    def step(self, actions, episode_step):
         """
         Step the environments synchronously.
 
         This is available for backwards compatibility.
         """
-        self.step_async(actions)    # reset때와 다르게 step_async()를 먼저 실행하고, step_wait()를 실행한다.
+        self.step_async(actions, episode_step)    # reset때와 다르게 step_async()를 먼저 실행하고, step_wait()를 실행한다.
         return self.step_wait()
 
     def render(self, mode="human"):
@@ -169,7 +169,7 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
     while True:
         cmd, data = remote.recv()
         if cmd == "step":
-            ob, s_ob, reward, done, info, available_actions = env.step(data)
+            ob, s_ob, reward, done, info, available_actions = env.step(data[0])
             if "bool" in done.__class__.__name__:  # done is a bool
                 if (
                     done
@@ -187,9 +187,77 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                     info[0]["original_avail_actions"] = copy.deepcopy(available_actions)
                     ob, s_ob, available_actions = env.reset()
 
+            landmarks = []
+            for entity in env.env.aec_env.env.env.env.env.world.landmarks:
+                if entity.name.startswith('landmark'):
+                    landmarks.append({
+                        'position': entity.state.p_pos,
+                        'size': entity.size
+                    })
+            
+            # 랜드마크와의 상대변위 처리 및 시야 범위 적용
+            if data[1] is not None:
+                if len(landmarks) > 0:  # ob가 충분한 차원을 가지는지 확인
+                    sum_min_dist_lm_wise = 0
+                    for i in range(len(landmarks)):
+                        relative_pos_landmark_wise = []
+                        for agent_idx in range(len(ob)):
+                            relative_pos_landmark_wise.append(ob[agent_idx][4 + 2 * i:6 + 2 * i])
+                        sum_min_dist_lm_wise += np.min(np.sqrt(np.sum(np.array(relative_pos_landmark_wise)**2, axis=1)))
+                        
+                    for ob_idx in range(len(ob)):
+                        # 5번째부터 10번째 차원까지 (인덱스 4부터 9까지) 처리
+                        for i in range(min(3, len(landmarks))):  # 최대 3개의 랜드마크 처리
+                            start_idx = 4 + 2 * i  # 각 랜드마크의 시작 인덱스
+                            end_idx = start_idx + 2  # 각 랜드마크의 끝 인덱스
+                            
+                            if end_idx <= len(ob[ob_idx]):  # 인덱스 범위 확인
+                                # 현재 랜드마크와의 상대변위 (2차원)
+                                relative_pos = ob[ob_idx][start_idx:end_idx]
+                                
+                                # 거리 계산 (유클리드 거리)
+                                distance = np.sqrt(np.sum(relative_pos**2))
+                                
+                                # 거리가 0.1보다 크면 해당 위치의 값들을 0으로 설정
+                                if distance > max(0.1, (np.sqrt(2) * 2 * ((500 - data[1]) / env.max_cycles))):
+                                    ob[ob_idx][start_idx:end_idx] = 0.0
+                                    reward[ob_idx] += 0.5 * sum_min_dist_lm_wise * 3
+                                    reward[ob_idx] -= 0.5 * np.sqrt(2) * 2 * 3 * 3
+                                # else:
+                                    # print(f"distance: {distance}", f"start_idx: {start_idx}", f"end_idx: {end_idx}", f"ob_idx: {ob_idx}", f"relative_pos: {relative_pos}")
+            
+            
             remote.send((ob, s_ob, reward, done, info, available_actions))
         elif cmd == "reset":
             ob, s_ob, available_actions = env.reset()
+            
+            landmarks = []
+            for entity in env.env.aec_env.env.env.env.env.world.landmarks:
+                if entity.name.startswith('landmark'):
+                    landmarks.append({
+                        'position': entity.state.p_pos,
+                        'size': entity.size
+                    })
+            
+            # 랜드마크와의 상대변위 처리 및 시야 범위 적용
+            # if len(landmarks) > 0:  # ob가 충분한 차원을 가지는지 확인
+            #     for ob_idx in range(len(ob)):
+            #         # 5번째부터 10번째 차원까지 (인덱스 4부터 9까지) 처리
+            #         for i in range(min(3, len(landmarks))):  # 최대 3개의 랜드마크 처리
+            #             start_idx = 4 + 2 * i  # 각 랜드마크의 시작 인덱스
+            #             end_idx = start_idx + 2  # 각 랜드마크의 끝 인덱스
+                        
+            #             if end_idx <= len(ob[ob_idx]):  # 인덱스 범위 확인
+            #                 # 현재 랜드마크와의 상대변위 (2차원)
+            #                 relative_pos = ob[ob_idx][start_idx:end_idx]
+                            
+            #                 # 거리 계산 (유클리드 거리)
+            #                 distance = np.sqrt(np.sum(relative_pos**2))
+                            
+            #                 # 거리가 0.1보다 크면 해당 위치의 값들을 0으로 설정
+            #                 if distance > 0.1:
+            #                     ob[ob_idx][start_idx:end_idx] = 0.0
+            
             remote.send((ob, s_ob, available_actions))
         elif cmd == "reset_task":
             ob = env.reset_task()
@@ -273,9 +341,9 @@ class ShareSubprocVecEnv(ShareVecEnv):
             self, len(env_fns), observation_space, share_observation_space, action_space    # 이거 대단한거 아니고 그냥 넘겨준 모든 정보들을 ShareVecEnv에 넘겨주는 것이다.
         )   # 심지어 ShareVecEnv는 이 파일 안에 있는 다른 클래스다.
 
-    def step_async(self, actions):
+    def step_async(self, actions, episode_step=None):
         for remote, action in zip(self.remotes, actions):
-            remote.send(("step", action))
+            remote.send(("step", (action, episode_step)))
         self.waiting = True # 환경 닫을때 이걸로 점검한다.
 
     def step_wait(self):

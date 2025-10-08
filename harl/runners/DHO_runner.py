@@ -654,13 +654,12 @@ class WM_Runner:
         
         return hz_ls
     
-    def compute_wm_int_rew(self, wm_input_t, actions, temp_wm_buffer=None, n_rollout_threads=None, step=None):
+    def compute_wm_int_rew(self, wm_input_t, actions, is_eval=None, n_rollout_threads=None, step=None):
         """World Model 기반 intrinsic reward 계산 - 단일 스텝 처리 방식
         
         Args:
-            obs: 현재 관찰 (n_rollout_threads, n_agents, obs_dim)
-            new_obs: 새로운 관찰 (n_rollout_threads, n_agents, obs_dim)
-            is_eval: 평가 모드 여부
+            wm_input_t: 다음 스텝에서읜 관찰 (n_rollout_threads, n_agents, obs_dim)
+            actions: 현재 액션 (n_rollout_threads, n_agents, action_dim)
             temp_wm_buffer: 임시 WM 버퍼
             n_rollout_threads: 롤아웃 스레드 수
             step: 현재 스텝 (로깅용)
@@ -671,15 +670,15 @@ class WM_Runner:
         step %= self.max_episode_len
         
         # WM 버퍼에서 현재까지의 시퀀스 가져오기
-        if temp_wm_buffer is None:
+        if is_eval is None:
             # WM_RolloutBuffer에서 현재 에피소드 데이터 가져오기
             current_episode_data = self.wm_buffer.current_buffer
         else:
-            current_episode_data = temp_wm_buffer
+            current_episode_data = None
         
-        if current_episode_data is None:
-            # 버퍼가 비어있으면 기본값 반환
-            return np.zeros((n_rollout_threads, self.num_agents, 1))
+        # if current_episode_data is None:
+        #     # 버퍼가 비어있으면 기본값 반환
+        #     return np.zeros((n_rollout_threads, self.num_agents, 1))
         
         with torch.no_grad():   # 현재 에피소드의 데이터 중 step + 1 까지의 데이터를 사용함
             # KL loss 계산
@@ -692,10 +691,11 @@ class WM_Runner:
             threads_o = torch.tensor(wm_input_t.reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)
             threads_is_first = torch.zeros((n_rollout_threads, 1), device=self.device, dtype=torch.float32)
             if step == 0:
+                self.prev_states = None
                 threads_is_first[:, 0] = 1.0
                 threads_a_before = torch.zeros((n_rollout_threads, 1, actions.shape[2] * self.num_agents), device=self.device, dtype=torch.float32)
             else:
-                threads_a_before = torch.tensor(self.wm_buffer.current_buffer['a_before'][:, step, :, :].reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)    
+                threads_a_before = torch.tensor(actions.reshape(n_rollout_threads, 1, -1), device=self.device, dtype=torch.float32)    
             
             wm_data_dict_new = {
                 'vector_obs': threads_o,  # (n_rollout_threads, 1, obs_dim)

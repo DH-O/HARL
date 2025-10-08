@@ -47,7 +47,9 @@ class PettingZooMPEEnv:
             obs, rew, term, trunc, info = self.env.step(self.wrap(actions.flatten()))
         else:
             obs, rew, term, trunc, info = self.env.step(self.wrap(actions)) # self.wrap(actions)는 actions를 agent별로 나눠서 저장한 것
-        self.cur_step += 1
+        self.cur_step += 1  
+        # 여기서 rew는 (랜드마크별로 가장 가까운 에이전트와의 거리를 음의 값으로 바꿈, 그걸 다 더하고 0.5배) 
+        # + (충돌시 얻은 패널티들을 다 더하고 그걸 0.5배)
         if self.cur_step == self.max_cycles:
             trunc = {agent: True for agent in self.agents}  # trunc가 term보다 우선순위가 높음
             for agent in self.agents:
@@ -55,7 +57,7 @@ class PettingZooMPEEnv:
                 # 재밌는 점은 simple_spread_v2에서는 무조건 bad_transition이 True로 끝난다.
         dones = {agent: term[agent] or trunc[agent] for agent in self.agents}
         s_obs = self.repeat(self.env.state())   # 이게 share_obs. 놀랍게도 그냥 글로벌 state를 self.n_agents만큼 반복해서 저장한 것
-        total_reward = sum([rew[agent] for agent in self.agents])
+        total_reward = sum([rew[agent] for agent in self.agents]) # 모든 에이전트들의 리워드를 다 더함
         rewards = [[total_reward]] * self.n_agents
         return (
             self.unwrap(obs),

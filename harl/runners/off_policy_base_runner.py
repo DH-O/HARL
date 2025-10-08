@@ -231,7 +231,7 @@ class OffPolicyBaseRunner:
                     {**algo_args["model"], **algo_args["algo"], **tdd_args["wm"], **tdd_args["network"]},  # 기존 알고리즘과 달리 tdd_args["wm"], tdd_args["network"] 추가
                     self.envs.observation_space[agent_id],
                     self.envs.action_space[agent_id],
-                    self.wm_runner.wm,
+                    self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
                     device=self.device,
                 )
                 self.actor.append(agent)
@@ -243,7 +243,7 @@ class OffPolicyBaseRunner:
                 self.envs.action_space,
                 self.num_agents,
                 self.state_type,
-                self.wm_runner.wm,
+                self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
                 device=self.device,
             )
 
@@ -405,7 +405,7 @@ class OffPolicyBaseRunner:
                 infos,
                 new_available_actions,
             ) = self.envs.step(
-                actions
+                actions, episode_step if self.env_args["semi_sparse_reward"] else None
             )  # rewards: (n_threads, n_agents, 1); dones: (n_threads, n_agents)
             # available_actions: (n_threads, ) of None or (n_threads, n_agents, action_number)
             # dones를 판별하는 기준은 mpe에서는 그냥 self.steps가 max_cycles 이상인지 검사해서 판별한다.
@@ -432,25 +432,29 @@ class OffPolicyBaseRunner:
                         self.int_rew_coeff = max(self.int_rew_coeff, 0.0) # 사실 if문때때
                 
                 if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
-                    input_for_int = obs
+                    input_for_wm = obs
                 elif self.tdd_args["network"]["use_intra_obs"]:
                     input_for_tdd = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
                     new_input_for_tdd = new_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
-                    input_for_int = share_obs
+                    input_for_wm = new_share_obs
                 elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                    input_for_int = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
+                    input_for_wm = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
                 elif self.tdd_args["network"]["use_share_obs"]:
-                    input_for_int = share_obs
+                    input_for_wm = share_obs
                 else:
-                    input_for_int = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
+                    input_for_wm = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
                 if dones.any():
                     int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_tdd.transpose(1, 0, 2), input_for_tdd.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
                     if self.tdd_args["wm"]["use_wm"]:
-                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+                        wm_rew = np.zeros_like(ext_rewards)
                 else:
                     int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_tdd.transpose(1, 0, 2), new_input_for_tdd.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
                     if self.tdd_args["wm"]["use_wm"]:
-                        wm_rew = self.wm_runner.compute_wm_int_rew(input_for_int[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+                        if episode_step == 0:
+                            self.wm_runner.compute_wm_int_rew(share_obs[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+                            wm_rew = self.wm_runner.compute_wm_int_rew(input_for_wm[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+                        else:
+                            wm_rew = self.wm_runner.compute_wm_int_rew(input_for_wm[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
                 
                 if self.tdd_args["train"]["off_extrinsic_reward"]:
                     if self.tdd_args["wm"]["use_wm"]:
@@ -459,7 +463,7 @@ class OffPolicyBaseRunner:
                         rewards = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
                 else:
                     if self.tdd_args["wm"]["use_wm"]:
-                        rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.05 * wm_rew + 0.5 * int_rew)
+                        rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (self.tdd_args["wm"]["wm_coeff"] * wm_rew + self.tdd_args["train"]["tdd_coeff"] * int_rew)
                     else:
                         rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
             """ TDD intrinsic reward 끝 """
@@ -773,7 +777,8 @@ class OffPolicyBaseRunner:
                     dones,
                     infos,
                     new_available_actions,
-                ) = self.envs.step(actions) # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
+                ) = self.envs.step(actions, episode_step if self.env_args["semi_sparse_reward"] else None) 
+                # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
                 
                 next_obs = new_obs.copy()
                 next_share_obs = new_share_obs.copy()
@@ -1006,8 +1011,6 @@ class OffPolicyBaseRunner:
                 if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
                     self.tdd_runner.rollout_buffer.add_data({"obs": obs, "next_obs": next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})  
                     # 여기서 obs는 (n_agents, n_threads, obs_dim), next_obs는 (n_threads, n_agents, obs_dim), dones는 (n_threads, n_agents)
-                    if self.tdd_args["wm"]["use_wm"]:
-                        self.wm_runner.wm_buffer.store_transition(episode_step, obs, actions, self.n_rollout_threads)
                 elif self.tdd_args["network"]["use_intra_obs"]:
                     self.tdd_runner.rollout_buffer.add_data({"obs": obs[:, :, :4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :4], "dones": dones.transpose(1, 0)})
                 elif self.tdd_args["network"]["use_p_obs_without_others"]:
@@ -1041,8 +1044,6 @@ class OffPolicyBaseRunner:
                 if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
                     self.tdd_runner.rollout_buffer.add_data({"obs": obs, "next_obs": next_obs.transpose(1, 0, 2), "dones": dones.transpose(1, 0)})  
                     # 여기서 obs는 (n_agents, n_threads, obs_dim), next_obs는 (n_threads, n_agents, obs_dim), dones는 (n_threads, n_agents)
-                    if self.tdd_args["wm"]["use_wm"]:
-                        self.wm_runner.wm_buffer.store_transition(episode_step, obs, actions, self.n_rollout_threads)
                 elif self.tdd_args["network"]["use_intra_obs"]:
                     self.tdd_runner.rollout_buffer.add_data({"obs": obs[:, :, :4], "next_obs": next_obs.transpose(1, 0, 2)[:, :, :4], "dones": dones.transpose(1, 0)})
                 elif self.tdd_args["network"]["use_p_obs_without_others"]:
@@ -1220,7 +1221,7 @@ class OffPolicyBaseRunner:
                 eval_dones, # (n_threads, n_agents)
                 eval_infos,
                 eval_available_actions,
-            ) = self.eval_envs.step(eval_actions)
+            ) = self.eval_envs.step(eval_actions, one_episode_len[0] if self.env_args["semi_sparse_reward"] else None)
             
             # intrinsic rewards 계산 (TDD가 있는 경우)
             if self.tdd_args is not None:
@@ -1236,16 +1237,25 @@ class OffPolicyBaseRunner:
                 else:
                     pos = eval_obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
                     new_pos = next_eval_obs[:, :, 2:4]  # new_obs: (n_threads, n_agents, obs_dim)
-                
-                # int_rew = self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), is_eval=True, temp_rollout_buffer=temp_rollout_buffer, n_rollout_threads=n_eval_rollout_threads)
-                
+                if self.tdd_args is not None:
+                    if not self.tdd_args["wm"]["use_wm"]:
+                        int_rew_SD = self.int_rew_coeff * self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), is_eval=True, temp_rollout_buffer=temp_rollout_buffer, n_rollout_threads=n_eval_rollout_threads)
+                        int_rew_WM = 0.0
+                    else:
+                        int_rew_SD = self.tdd_args["train"]["tdd_coeff"] * self.int_rew_coeff * self.tdd_runner.compute_intrinsic_reward(pos.transpose(1, 0, 2), new_pos.transpose(1, 0, 2), is_eval=True, temp_rollout_buffer=temp_rollout_buffer, n_rollout_threads=n_eval_rollout_threads)
+                        if one_episode_len[0] == 0:
+                            self.wm_runner.compute_wm_int_rew(eval_share_obs[:, 0], eval_actions, is_eval=1, n_rollout_threads=n_eval_rollout_threads, step=one_episode_len[0])
+                            int_rew_WM = self.tdd_args["wm"]["wm_coeff"] * self.int_rew_coeff * self.wm_runner.compute_wm_int_rew(next_eval_share_obs[:, 0], eval_actions, is_eval=1, n_rollout_threads=n_eval_rollout_threads, step=one_episode_len[0])
+                        else:
+                            int_rew_WM = self.tdd_args["wm"]["wm_coeff"] * self.int_rew_coeff * self.wm_runner.compute_wm_int_rew(next_eval_share_obs[:, 0], eval_actions, is_eval=1, n_rollout_threads=n_eval_rollout_threads, step=one_episode_len[0])
                 # intrinsic rewards 저장 (10 스텝마다만 저장)
                 # if one_episode_len[0] % 10 == 0:
                 #     for eval_i in range(n_eval_rollout_threads):
                 #         data_file = os.path.join(temp_eval_data_dir, f'rollout_{eval_i}_data.txt')
                 #         with open(data_file, 'a') as f:
                 #             f.write(f"Step {one_episode_len[eval_i]}:\n")
-                #             f.write(f"Intrinsic Rewards: {int_rew[eval_i]}\n")
+                #             f.write(f"Intrinsic Rewards of SD: {int_rew_SD[eval_i]}\n")
+                #             f.write(f"Intrinsic Rewards of WM: {int_rew_WM[eval_i]}\n")
                 #             f.write(f"Obs: {eval_obs[eval_i]}\n")
                 #             f.write(f"New Obs: {next_eval_obs[eval_i]}\n")
                 #             f.write("-" * 50 + "\n")
@@ -1306,7 +1316,10 @@ class OffPolicyBaseRunner:
                 # 에이전트 정보 텍스트 추가
                 for agent_id in range(self.num_agents):
                     pos = eval_obs[0, agent_id, 2:4]
-                    # int_reward = float(int_rew[0][agent_id]) if self.tdd_args is not None else 0.0
+                    if self.tdd_args is not None:
+                        int_reward_SD = float(int_rew_SD[0][agent_id])
+                        if self.tdd_args["wm"]["use_wm"]:
+                            int_reward_WM = float(int_rew_WM[0][agent_id])
                     ext_reward = float(eval_rewards[0][agent_id][0])
                     
                     # 각 정보를 별도의 텍스트로 표시
@@ -1314,9 +1327,13 @@ class OffPolicyBaseRunner:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)   # 0.14가 크기
                     cv2.putText(info_frame, f"Position: ({pos[0]:.2f}, {pos[1]:.2f})", (5, 35 + agent_id * 100), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                    # cv2.putText(info_frame, f"Intrinsic Reward: {int_reward:.4f}", (5, 55 + agent_id * 100), 
-                    #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                    cv2.putText(info_frame, f"Extrinsic Reward: {ext_reward:.4f}", (5, 75 + agent_id * 100), 
+                    if self.tdd_args is not None:
+                        cv2.putText(info_frame, f"Intrinsic Reward_SD: {int_reward_SD:.4f}", (5, 55 + agent_id * 100), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                        if self.tdd_args["wm"]["use_wm"]:
+                            cv2.putText(info_frame, f"Intrinsic Reward_WM: {int_reward_WM:.4f}", (5, 75 + agent_id * 100), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    cv2.putText(info_frame, f"Extrinsic Reward: {ext_reward:.4f}", (5, 95 + agent_id * 100), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
                 
                 # 원본 프레임과 정보 프레임 합치기
@@ -1450,7 +1467,8 @@ class OffPolicyBaseRunner:
                     "eval_average_episode_length", eval_avg_len, cur_step
                 )
                 break
-        
+        if self.tdd_args["wm"]["use_wm"]:
+            self.wm_runner.prev_states = None
         del rollout_data, temp_rollout_buffer
 
     @torch.no_grad()
@@ -1508,7 +1526,7 @@ class OffPolicyBaseRunner:
                         eval_dones,
                         _,
                         eval_available_actions,
-                    ) = self.envs.step(eval_actions[0])
+                    ) = self.envs.step(eval_actions[0], one_episode_len[0] if self.env_args["semi_sparse_reward"] else None)
                     
                     step_reward = eval_rewards[0][0]
                     if eval_rewards[0][0] != eval_rewards[1][0]:
