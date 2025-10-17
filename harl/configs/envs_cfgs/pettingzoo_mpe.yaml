@@ -7,6 +7,6 @@ max_cycles: 500
 use_wall: True
 sparse_reward: False
 semi_sparse_reward: True
-agent_size: 0.03
+agent_size: 0.04
 landmark_size: 0.02
 agent_wise_distance: False

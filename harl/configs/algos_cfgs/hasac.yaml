@@ -1,7 +1,7 @@
 # This is the configuration file for the HASAC algorithm.
 seed:
   # whether to use the specified seed
-  seed_specify: True
+  seed_specify: False
   # seed
   seed: 5589
 device:
@@ -18,6 +18,8 @@ train:
   num_env_steps: 10000000 # 10^7이 원래 값이다.
   # use_warmup
   use_warmup: True
+  # use tdd
+  use_tdd: True
   # number of warmup steps
   warmup_steps: 300000 # 10^4이 원래 값이다. 1000 * max_cycles수로 진행중
   # number of steps per train
@@ -27,7 +29,7 @@ train:
   # logging interval (currently unused)
   log_interval: ~
   # evaluation interval
-  eval_interval: 40000  # 기존 값은 10000이다. 40000으로 바꿀거다.
+  eval_interval: 20000  # 기존 값은 10000이다.
   # whether to use ValueNorm
   use_valuenorm: True # tuned config에 의하면 False
   # whether to use linear learning rate decay

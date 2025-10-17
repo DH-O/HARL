@@ -198,34 +198,34 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
             # 랜드마크와의 상대변위 처리 및 시야 범위 적용
             if data[1] is not None:
                 if len(landmarks) > 0:  # ob가 충분한 차원을 가지는지 확인
-                    sum_min_dist_lm_wise = 0
-                    for i in range(len(landmarks)):
-                        relative_pos_landmark_wise = []
-                        for agent_idx in range(len(ob)):
-                            relative_pos_landmark_wise.append(ob[agent_idx][4 + 2 * i:6 + 2 * i])
-                        sum_min_dist_lm_wise += np.min(np.sqrt(np.sum(np.array(relative_pos_landmark_wise)**2, axis=1)))
+                    # sum_min_dist_lm_wise = 0
+                    # for i in range(len(landmarks)):
+                    #     relative_pos_landmark_wise = []
+                    #     for agent_idx in range(len(ob)):
+                    #         relative_pos_landmark_wise.append(ob[agent_idx][4 + 2 * i:6 + 2 * i])
+                    #     sum_min_dist_lm_wise += np.min(np.sqrt(np.sum(np.array(relative_pos_landmark_wise)**2, axis=1)))
                         
-                    for ob_idx in range(len(ob)):
+                    for agent_idx in range(len(ob)):
                         # 5번째부터 10번째 차원까지 (인덱스 4부터 9까지) 처리
                         for i in range(min(3, len(landmarks))):  # 최대 3개의 랜드마크 처리
                             start_idx = 4 + 2 * i  # 각 랜드마크의 시작 인덱스
                             end_idx = start_idx + 2  # 각 랜드마크의 끝 인덱스
                             
-                            if end_idx <= len(ob[ob_idx]):  # 인덱스 범위 확인
+                            if end_idx <= len(ob[agent_idx]):  # 인덱스 범위 확인
                                 # 현재 랜드마크와의 상대변위 (2차원)
-                                relative_pos = ob[ob_idx][start_idx:end_idx]
+                                relative_pos = ob[agent_idx][start_idx:end_idx]
                                 
                                 # 거리 계산 (유클리드 거리)
                                 distance = np.sqrt(np.sum(relative_pos**2))
                                 
-                                # 거리가 0.1보다 크면 해당 위치의 값들을 0으로 설정
-                                if distance > max(0.1, (np.sqrt(2) * 2 * ((500 - data[1]) / env.max_cycles))):
-                                    ob[ob_idx][start_idx:end_idx] = 0.0
-                                    reward[ob_idx] += 0.5 * sum_min_dist_lm_wise * 3
-                                    reward[ob_idx] -= 0.5 * np.sqrt(2) * 2 * 3 * 3
-                                # else:
-                                    # print(f"distance: {distance}", f"start_idx: {start_idx}", f"end_idx: {end_idx}", f"ob_idx: {ob_idx}", f"relative_pos: {relative_pos}")
-            
+                                # 거리가 현재 시야보다 크면 (최소 시야는 0.1), 0으로 마스킹하고 리워드는 충돌 리워드는 유지한채로 극단적 패널티
+                                # if distance > max(0.1, (np.sqrt(2) * 2 * ((500 - data[1]) / env.max_cycles))):
+                                #     ob[ob_idx][start_idx:end_idx] = 0.0
+                                #     reward[ob_idx] += 0.5 * sum_min_dist_lm_wise * 3
+                                #     reward[ob_idx] -= 0.5 * np.sqrt(2) * 2 * 3 * 3
+                                
+                                if distance > 0.1:
+                                    ob[agent_idx][start_idx:end_idx] = 0.0
             
             remote.send((ob, s_ob, reward, done, info, available_actions))
         elif cmd == "reset":

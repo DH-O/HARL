@@ -73,16 +73,18 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     else None,
                 )
                 next_actions.append(next_action)
-                if self.tdd_runner is not None and self.tdd_args["train"]["use_state_entropy"]:
-                    # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
-                    # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.
-                    # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
-                    next_entropy_terms_critics.append(-self.tdd_runner.calculate_central_state_entropy(sp_next_obs[agent_id], agent_id, step).unsqueeze(-1))
+                if self.algo_args["train"]["use_tdd"]:
+                    if self.tdd_runner is not None and self.tdd_args["train"]["use_state_entropy"]:
+                        # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
+                        # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.
+                        # 현재 agent_wise로 잘 진행중에 있으며 그래서 건네줘야할 정보는 sp_next_obs[agent_id]랑면 될 듯?
+                        next_entropy_terms_critics.append(-self.tdd_runner.calculate_central_state_entropy(sp_next_obs[agent_id], agent_id, step).unsqueeze(-1))
+                    else:
+                        next_entropy_terms_critics.append(next_logp_action)
                 else:
                     next_entropy_terms_critics.append(next_logp_action)
-            
+                    
             """ NaN 체크를 위한 디버깅 코드 추가 """
-            
             # numpy 배열인 경우 텐서로 변환 후 체크
             def check_nan(data, name):
                 if isinstance(data, np.ndarray):

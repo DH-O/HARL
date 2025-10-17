@@ -32,9 +32,14 @@ class ContinuousQNet(nn.Module):
         activation_func = args["activation_func"]
         hidden_sizes = args["hidden_sizes"]
         cent_obs_shape = get_shape_from_obs_space(cent_obs_space)
-        self.use_wm = args["use_wm"]
-        self.use_wm_with_obs = args["use_wm_with_obs"]
-        self.use_wm_with_Q = args["use_wm_with_Q"]
+        if wm_models is not None:
+            self.use_wm = args["use_wm"]
+            self.use_wm_with_obs = args["use_wm_with_obs"]
+            self.use_wm_with_Q = args["use_wm_with_Q"]
+        else:
+            self.use_wm = False
+            self.use_wm_with_obs = False
+            self.use_wm_with_Q = False
         
         if len(cent_obs_shape) == 3:
             self.feature_extractor = PlainCNN(

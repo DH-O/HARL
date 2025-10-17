@@ -200,6 +200,8 @@ class OffPolicyBaseRunner:
         self.tdd_args = tdd_args
         if self.tdd_args is not None and not self.algo_args["render"]["use_render"]:
             self.tdd_runner = TddRunner(algo_args["train"]["n_rollout_threads"], self.num_agents, self.envs.observation_space, self.tdd_args, env_args, self.save_dir)
+        else:
+            self.tdd_runner = None
         
         if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
             self.share_obs_dim = self.envs.share_observation_space[0].shape[0]
@@ -227,25 +229,44 @@ class OffPolicyBaseRunner:
         else:
             self.actor = []
             for agent_id in range(self.num_agents):
-                agent = ALGO_REGISTRY[args["algo"]](
-                    {**algo_args["model"], **algo_args["algo"], **tdd_args["wm"], **tdd_args["network"]},  # 기존 알고리즘과 달리 tdd_args["wm"], tdd_args["network"] 추가
-                    self.envs.observation_space[agent_id],
-                    self.envs.action_space[agent_id],
-                    self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
-                    device=self.device,
-                )
+                if self.tdd_args is None:
+                    agent = ALGO_REGISTRY[args["algo"]](
+                        {**algo_args["model"], **algo_args["algo"], "use_tdd": 0},
+                        self.envs.observation_space[agent_id],
+                        self.envs.action_space[agent_id],
+                        device=self.device,
+                    )
+                else:    
+                    agent = ALGO_REGISTRY[args["algo"]](
+                        {**algo_args["model"], **algo_args["algo"], **tdd_args["wm"], **tdd_args["network"], "use_tdd": 1},  # 기존 알고리즘과 달리 tdd_args["wm"], tdd_args["network"] 추가
+                        self.envs.observation_space[agent_id],
+                        self.envs.action_space[agent_id],
+                        self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
+                        device=self.device,
+                    )
                 self.actor.append(agent)
 
         if not self.algo_args["render"]["use_render"]:
-            self.critic = CRITIC_REGISTRY[args["algo"]](    # 저렇게 해서 클래스를 가져온다.
-                {**algo_args["train"], **algo_args["model"], **algo_args["algo"], **tdd_args["wm"]},
-                self.envs.share_observation_space[0],
-                self.envs.action_space,
-                self.num_agents,
-                self.state_type,
-                self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
-                device=self.device,
-            )
+            if self.tdd_args is None:
+                self.critic = CRITIC_REGISTRY[args["algo"]](
+                    {**algo_args["train"], **algo_args["model"], **algo_args["algo"], "use_tdd": 0},
+                    self.envs.share_observation_space[0],
+                    self.envs.action_space,
+                    self.num_agents,
+                    self.state_type,
+                    None,
+                    device=self.device,
+                )
+            else:
+                self.critic = CRITIC_REGISTRY[args["algo"]](    # 저렇게 해서 클래스를 가져온다.
+                    {**algo_args["train"], **algo_args["model"], **algo_args["algo"], **tdd_args["wm"]},
+                    self.envs.share_observation_space[0],
+                    self.envs.action_space,
+                    self.num_agents,
+                    self.state_type,
+                    self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
+                    device=self.device,
+                )
 
             if self.state_type == "EP": # MPE의 경우 EP
                 self.buffer = OffPolicyBufferEP(
@@ -378,23 +399,25 @@ class OffPolicyBaseRunner:
         episode_step = 0
         for step in range(steps):
             input_for_actor = obs
-            if self.tdd_args["network"]["use_hz_actor"]:
-                if self.tdd_args["network"]["use_full_p_obs"]:
-                    input_for_actor = obs
-                elif self.tdd_args["network"]["use_intra_obs"]:
-                    input_for_actor = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원) 텐서 아니다.
-                elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                    input_for_actor = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
-                elif self.tdd_args["network"]["use_share_obs"]:
-                    input_for_actor = share_obs # obs: (n_threads, n_agents, obs_dim)
-                # action: (n_threads, n_agents, dim)
-                if episode_step == 0:
-                    input_for_actor = self.wm_runner.init_hz_value(input_for_actor, n_rollout_threads=self.n_rollout_threads)
-                else:
-                    input_for_actor = self.wm_runner.compute_hz_value(input_for_actor, actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+            if self.tdd_args is not None:
+                if self.tdd_args["network"]["use_hz_actor"]:
+                    if self.tdd_args["network"]["use_full_p_obs"]:
+                        input_for_actor = obs
+                    elif self.tdd_args["network"]["use_intra_obs"]:
+                        input_for_actor = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원) 텐서 아니다.
+                    elif self.tdd_args["network"]["use_p_obs_without_others"]:
+                        input_for_actor = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
+                    elif self.tdd_args["network"]["use_share_obs"]:
+                        input_for_actor = share_obs # obs: (n_threads, n_agents, obs_dim)
+                    # action: (n_threads, n_agents, dim)
+                    if episode_step == 0:
+                        input_for_actor = self.wm_runner.init_hz_value(input_for_actor, n_rollout_threads=self.n_rollout_threads)
+                    else:
+                        input_for_actor = self.wm_runner.compute_hz_value(input_for_actor, actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
                 
             actions = self.get_actions(
-                input_for_actor, available_actions=available_actions, add_random=True, use_wm=self.tdd_args["wm"]["use_wm"]
+                input_for_actor, available_actions=available_actions, add_random=True, 
+                use_wm=self.tdd_args["wm"]["use_wm"] if self.tdd_args is not None else False
             )
             
             (
@@ -463,9 +486,19 @@ class OffPolicyBaseRunner:
                         rewards = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
                 else:
                     if self.tdd_args["wm"]["use_wm"]:
-                        rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (self.tdd_args["wm"]["wm_coeff"] * wm_rew + self.tdd_args["train"]["tdd_coeff"] * int_rew)
+                        if (step % (steps // 200)) % 2 == 0:   # 5 * 10^6 -> 5 * 10^5
+                            rewards = (ext_rewards / 20) + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (self.tdd_args["wm"]["wm_coeff"] * wm_rew + self.tdd_args["train"]["tdd_coeff"] * int_rew)
+                        else:
+                            rewards = ext_rewards
+                        
                     else:
-                        rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                        if (step % (steps // 100)) % 2 == 0:   # 5 * 10^6 -> 5 * 10^5
+                            rewards = (ext_rewards / 100) + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+                        else:
+                            rewards = ext_rewards
+                        # rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
+            else:
+                rewards = ext_rewards
             """ TDD intrinsic reward 끝 """
             
             next_share_obs = new_share_obs.copy()

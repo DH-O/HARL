@@ -38,11 +38,11 @@ train:
   # batch size for training
   batch_size: 1024 # 512가 원래 값
   # coeff stop ratio 클수록 빨리 멈춘다. ex) 1/2 steps에 멈추기. 0으로 설정하면 감소 안 한다.
-  coeff_stop_ratio: 1
+  coeff_stop_ratio: 1.5
   # tdd coeff
-  tdd_coeff: 0.75
+  tdd_coeff: 1
   # coeff magnitude
-  coeff_magnitude: 10
+  coeff_magnitude: 8
   # learning rate
   learning_rate: 1e-3
   
@@ -87,9 +87,9 @@ logging:
 
 wm:
   # use wm
-  use_wm: True
+  use_wm: False
   # wm coeff
-  wm_coeff: 0.05
+  wm_coeff: 0.2
   # use wm with obs
   use_wm_with_obs: True
   # use wm without Q
