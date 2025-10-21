@@ -7,6 +7,10 @@ import imageio
 import numpy as np
 import setproctitle
 from harl.utils.logger import Logger
+
+# 상수 정의
+DEFAULT_STATE_TYPE = "EP"
+DEFAULT_POLICY_FREQ = 1
 """ exploration metric """
 import matplotlib
 matplotlib.use('Agg')  # Headless backend 설정
@@ -116,85 +120,26 @@ class OffPolicyBaseRunner:
             algo_args: arguments related to algo, loaded from config file and updated with unparsed command-line arguments.
             env_args: arguments related to env, loaded from config file and updated with unparsed command-line arguments.
         """
-        self.args = args
-        self.algo_args = algo_args
-        self.env_args = env_args
+        # 기본 설정 초기화
+        self._setup_basic_config(args, algo_args, env_args)
         
-        self.n_rollout_threads =  self.algo_args["train"]["n_rollout_threads"]
+        # 알고리즘 관련 설정 초기화
+        self._setup_algorithm_config()
         
-        if "policy_freq" in self.algo_args["algo"]: # 이거 주로 OFF임
-            self.policy_freq = self.algo_args["algo"]["policy_freq"]
-        else:
-            self.policy_freq = 1
-
-        self.state_type = env_args.get("state_type", "EP")   # state_type이 없으면 기본값은 "EP"로 가져오란 뜻. 
-        # dict.get(key, default)는 dict에 key가 있으면 dict[key]를 반환하고, 없으면 default를 반환한다.
-        # mpe의 경우 EP
-        self.share_param = algo_args["algo"]["share_param"] # False가 좋다고 판단. actor policy가 서로 다른 것이 더 좋을 것 같다.
-        self.fixed_order = algo_args["algo"]["fixed_order"] # False. HASAC actor 업데이트에서 fixed_order가 True일 이유가 별로 없다.
-
-        set_seed(algo_args["seed"])
-        self.device = init_device(algo_args["device"])
-        self.task_name = get_task_name(args["env"], env_args)
-        if not self.algo_args["render"]["use_render"]:
-            self.run_dir, self.log_dir, self.save_dir, self.writer = init_dir(
-                args["env"],
-                env_args,
-                args["algo"],
-                args["exp_name"],
-                algo_args["seed"]["seed"],
-                logger_path=algo_args["logger"]["log_dir"],
-            )
-            save_config(args, algo_args, env_args, tdd_args, self.run_dir)
-            self.log_file = open(
-                os.path.join(self.run_dir, "progress.txt"), "w", encoding="utf-8"
-            )
+        # 환경 및 시스템 설정 초기화
+        self._setup_environment_config()
         
-        # 프로세스 이름 설정
-        setproctitle.setproctitle(
-            str(args["algo"]) + "-" + str(args["env"]) + "-" + str(args["exp_name"])
-        )
+        # 디렉토리 및 로깅 설정 초기화
+        self._setup_logging_config(args, algo_args, env_args, tdd_args)
 
-        # env
-        if self.algo_args["render"]["use_render"]:  # make envs for rendering
-            (
-                self.envs,
-                self.manual_render,
-                self.manual_expand_dims,
-                self.manual_delay,
-                self.env_num,
-            ) = make_render_env(args["env"], algo_args["seed"]["seed"], env_args)
-        else:  # make envs for training and evaluation
-            self.envs = make_train_env(
-                args["env"],
-                algo_args["seed"]["seed"],
-                algo_args["train"]["n_rollout_threads"],
-                env_args,
-            )
-            self.eval_envs = (
-                make_eval_env(
-                    args["env"],
-                    algo_args["seed"]["seed"],
-                    algo_args["eval"]["n_eval_rollout_threads"],
-                    env_args,
-                )
-                if algo_args["eval"]["use_eval"]
-                else None
-            )
-        self.num_agents = get_num_agents(args["env"], env_args, self.envs)
-        self.agent_deaths = np.zeros(
-            (self.n_rollout_threads, self.num_agents, 1)
-        )
-
-        self.action_spaces = self.envs.action_space
-        self.act_n_before = np.zeros((self.num_agents, self.n_rollout_threads, self.action_spaces[0].shape[0]))
+        # 환경 초기화
+        self._setup_environments(args, algo_args, env_args)
         
-        for agent_id in range(self.num_agents):
-            self.action_spaces[agent_id].seed(algo_args["seed"]["seed"] + agent_id + 1)
-
-        print("share_observation_space: ", self.envs.share_observation_space)
-        print("observation_space: ", self.envs.observation_space)
-        print("action_space: ", self.envs.action_space)
+        # 에이전트 설정
+        self._setup_agents()
+        
+        # 디버깅 정보 출력
+        self._print_environment_info()
 
         """ TDD, WM 관련 """
         self.tdd_args = tdd_args
@@ -208,84 +153,12 @@ class OffPolicyBaseRunner:
             self.wm_runner = WM_Runner(self.share_obs_dim, self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
         """ TDD 관련 끝 """
         
-        if self.share_param:
-            self.actor = []
-            agent = ALGO_REGISTRY[args["algo"]](
-                {**algo_args["model"], **algo_args["algo"]},    # 딕셔너리를 언패킹할때는 별을 2개 붙여야 키와 벨류 모두 나와진다.
-                self.envs.observation_space[0],
-                self.envs.action_space[0],
-                device=self.device,
-            )
-            self.actor.append(agent)
-            for agent_id in range(1, self.num_agents):
-                assert (
-                    self.envs.observation_space[agent_id]
-                    == self.envs.observation_space[0]
-                ), "Agents have heterogeneous observation spaces, parameter sharing is not valid."
-                assert (
-                    self.envs.action_space[agent_id] == self.envs.action_space[0]
-                ), "Agents have heterogeneous action spaces, parameter sharing is not valid."
-                self.actor.append(self.actor[0])
-        else:
-            self.actor = []
-            for agent_id in range(self.num_agents):
-                if self.tdd_args is None:
-                    agent = ALGO_REGISTRY[args["algo"]](
-                        {**algo_args["model"], **algo_args["algo"], "use_tdd": 0},
-                        self.envs.observation_space[agent_id],
-                        self.envs.action_space[agent_id],
-                        device=self.device,
-                    )
-                else:    
-                    agent = ALGO_REGISTRY[args["algo"]](
-                        {**algo_args["model"], **algo_args["algo"], **tdd_args["wm"], **tdd_args["network"], "use_tdd": 1},  # 기존 알고리즘과 달리 tdd_args["wm"], tdd_args["network"] 추가
-                        self.envs.observation_space[agent_id],
-                        self.envs.action_space[agent_id],
-                        self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
-                        device=self.device,
-                    )
-                self.actor.append(agent)
+        # 액터 초기화
+        self._init_actors(args, algo_args, tdd_args)
 
+        # 크리틱 및 버퍼 초기화
         if not self.algo_args["render"]["use_render"]:
-            if self.tdd_args is None:
-                self.critic = CRITIC_REGISTRY[args["algo"]](
-                    {**algo_args["train"], **algo_args["model"], **algo_args["algo"], "use_tdd": 0},
-                    self.envs.share_observation_space[0],
-                    self.envs.action_space,
-                    self.num_agents,
-                    self.state_type,
-                    None,
-                    device=self.device,
-                )
-            else:
-                self.critic = CRITIC_REGISTRY[args["algo"]](    # 저렇게 해서 클래스를 가져온다.
-                    {**algo_args["train"], **algo_args["model"], **algo_args["algo"], **tdd_args["wm"]},
-                    self.envs.share_observation_space[0],
-                    self.envs.action_space,
-                    self.num_agents,
-                    self.state_type,
-                    self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None,
-                    device=self.device,
-                )
-
-            if self.state_type == "EP": # MPE의 경우 EP
-                self.buffer = OffPolicyBufferEP(
-                    {**algo_args["train"], **algo_args["model"], **algo_args["algo"]},
-                    self.envs.share_observation_space[0],
-                    self.num_agents,
-                    self.envs.observation_space,
-                    self.envs.action_space,
-                )
-            elif self.state_type == "FP":
-                self.buffer = OffPolicyBufferFP(
-                    {**algo_args["train"], **algo_args["model"], **algo_args["algo"]},
-                    self.envs.share_observation_space[0],
-                    self.num_agents,
-                    self.envs.observation_space,
-                    self.envs.action_space,
-                )
-            else:
-                raise NotImplementedError
+            self._init_critic_and_buffer(args, algo_args, tdd_args)
 
         if (
             "use_valuenorm" in self.algo_args["train"].keys()   
@@ -300,56 +173,368 @@ class OffPolicyBaseRunner:
 
         self.total_it = 0  # total iteration
 
-        # 알파 값 설정
-        if (
-            "auto_alpha" in self.algo_args["algo"].keys()
-            and self.algo_args["algo"]["auto_alpha"]    # True
-        ):
-            self.target_entropy = []
-            for agent_id in range(self.num_agents):
-                if (
-                    self.envs.action_space[agent_id].__class__.__name__ == "Box"
-                ):  # Differential entropy can be negative
-                    if self.tdd_args is not None and self.tdd_args["train"]["use_state_entropy"] and not self.tdd_args["train"]["use_actor_entropy"]:
-                        self.target_entropy.append(
-                            -np.prod(2 * (self.num_agents - 1))    # successor distance에 관여하는 차원이 2차원이다. 본인 제외한 모든 에이전트 사이와의 거리 갯수만큼 차원의 기준으로 정해봤다.
-                        )
-                        print(f"use_state_entropy and not use_actor_entropy, therefore target_entropy is {self.target_entropy[-1]}")
-                    elif self.tdd_args is not None and self.tdd_args["train"]["use_actor_entropy"] and self.tdd_args["train"]["use_state_entropy"]:
-                        self.target_entropy.append(
-                            -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
-                        )
-                        print(f"use_actor_entropy for decentralized and use_state_entropy for centralized, therefore target_entropy is {self.target_entropy[-1]}")
-                    else:
-                        self.target_entropy.append(
-                            -np.prod(self.envs.action_space[agent_id].shape)    # (상, 하, 좌, 우) 라서 5차원
-                        )
-                        if self.tdd_args is not None:
-                            print(f"use_state_entropy: {self.tdd_args['train']['use_state_entropy']}, use_actor_entropy: {self.tdd_args['train']['use_actor_entropy']}, therefore target_entropy is {self.target_entropy[-1]}")
-                        else:
-                            print("tdd_args is None")
-                else:  # Discrete entropy is always positive. Thus we set the max possible entropy as the target entropy
-                    self.target_entropy.append(
-                        -0.98
-                        * np.log(1.0 / np.prod(self.envs.action_space[agent_id].shape))
-                    )
-            self.log_alpha = []
-            self.alpha_optimizer = []
-            self.alpha = []
-            for agent_id in range(self.num_agents):
-                _log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
-                self.log_alpha.append(_log_alpha)
-                self.alpha_optimizer.append(
-                    torch.optim.Adam(
-                        [_log_alpha], lr=self.algo_args["algo"]["alpha_lr"]
-                    )
-                )
-                self.alpha.append(torch.exp(_log_alpha.detach()))
-        elif "alpha" in self.algo_args["algo"].keys():
-            self.alpha = [self.algo_args["algo"]["alpha"]] * self.num_agents
+        # 알파값 설정
+        self._init_alpha()
         
         if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
             self.logger = Logger(self.tdd_args["logging"], self.log_dir)
+    
+    def _init_actors(self, args, algo_args, tdd_args):
+        """액터 초기화를 위한 헬퍼 메서드"""
+        # 공통 파라미터 준비
+        base_params = {**algo_args["model"], **algo_args["algo"]}
+        if self.tdd_args is not None:
+            base_params.update({**tdd_args["wm"], **tdd_args["network"], "use_tdd": 1})
+        else:
+            base_params["use_tdd"] = 0
+
+        self.actor = []
+
+        if self.share_param:
+            # 파라미터 공유 모드
+            self._validate_homogeneous_spaces()
+            agent = self._create_agent(args, base_params, 0)
+            self.actor = [agent] * self.num_agents
+        else:
+            # 개별 에이전트 모드
+            for agent_id in range(self.num_agents):
+                agent = self._create_agent(args, base_params, agent_id)
+                self.actor.append(agent)
+
+    def _validate_homogeneous_spaces(self):
+        """파라미터 공유 시 동일한 observation/action space 검증"""
+        for agent_id in range(1, self.num_agents):
+            assert (self.envs.observation_space[agent_id] == self.envs.observation_space[0]), \
+                "Agents have heterogeneous observation spaces, parameter sharing is not valid."
+            assert (self.envs.action_space[agent_id] == self.envs.action_space[0]), \
+                "Agents have heterogeneous action spaces, parameter sharing is not valid."
+
+    def _create_agent(self, args, base_params, agent_id):
+        """에이전트 생성 헬퍼 메서드"""
+        params = base_params.copy()
+        obs_space = self.envs.observation_space[agent_id]
+        action_space = self.envs.action_space[agent_id]
+        
+        # TDD 관련 추가 파라미터
+        wm_param = None
+        if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
+            wm_param = self.wm_runner.wm
+        
+        return ALGO_REGISTRY[args["algo"]](
+            params, obs_space, action_space, wm_param, device=self.device
+        )
+    
+    def _init_critic_and_buffer(self, args, algo_args, tdd_args):
+        """크리틱과 버퍼 초기화를 위한 헬퍼 메서드"""
+        # 크리틱 초기화
+        self._init_critic(args, algo_args, tdd_args)
+        
+        # 버퍼 초기화
+        self._init_buffer(algo_args)
+    
+    def _init_critic(self, args, algo_args, tdd_args):
+        """크리틱 초기화 헬퍼 메서드"""
+        # 공통 파라미터 준비
+        base_params = {**algo_args["train"], **algo_args["model"], **algo_args["algo"]}
+        
+        if self.tdd_args is not None:
+            base_params.update({**tdd_args["wm"], "use_tdd": 1})
+            wm_param = self.wm_runner.wm if self.tdd_args["wm"]["use_wm"] else None
+        else:    
+            base_params["use_tdd"] = 0
+            wm_param = None
+
+        self.critic = CRITIC_REGISTRY[args["algo"]](
+            base_params,
+            self.envs.share_observation_space[0],
+            self.envs.action_space,
+            self.num_agents,
+            self.state_type,
+            wm_param,
+            device=self.device,
+        )
+
+    def _init_buffer(self, algo_args):
+        """버퍼 초기화 헬퍼 메서드"""
+        buffer_params = {**algo_args["train"], **algo_args["model"], **algo_args["algo"]}
+        
+        if self.state_type == "EP":  # MPE의 경우 EP
+            self.buffer = OffPolicyBufferEP(
+                buffer_params,
+                self.envs.share_observation_space[0],
+                self.num_agents,
+                self.envs.observation_space,
+                self.envs.action_space,
+            )
+        elif self.state_type == "FP":
+            self.buffer = OffPolicyBufferFP(
+                buffer_params,
+                self.envs.share_observation_space[0],
+                self.num_agents,
+                self.envs.observation_space,
+                self.envs.action_space,
+            )
+        else:
+            raise NotImplementedError(f"Unsupported state_type: {self.state_type}")
+    
+    def _init_alpha(self):
+        """알파값 초기화 헬퍼 메서드"""
+        if self._is_auto_alpha_enabled():
+            self._init_auto_alpha()
+        elif self._has_fixed_alpha():
+            self._init_fixed_alpha()
+    
+    def _is_auto_alpha_enabled(self):
+        """자동 알파 설정이 활성화되었는지 확인"""
+        return ("auto_alpha" in self.algo_args["algo"].keys() 
+                and self.algo_args["algo"]["auto_alpha"])
+    
+    def _has_fixed_alpha(self):
+        """고정 알파값이 설정되어 있는지 확인"""
+        return "alpha" in self.algo_args["algo"].keys()
+    
+    def _init_auto_alpha(self):
+        """자동 알파 초기화"""
+        self.target_entropy = []
+        self.log_alpha = []
+        self.alpha_optimizer = []
+        self.alpha = []
+        
+        for agent_id in range(self.num_agents):
+            # 타겟 엔트로피 계산
+            target_entropy = self._calculate_target_entropy(agent_id)
+            self.target_entropy.append(target_entropy)
+            
+            # 로그 알파 및 옵티마이저 초기화
+            log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+            self.log_alpha.append(log_alpha)
+            self.alpha_optimizer.append(
+                torch.optim.Adam([log_alpha], lr=self.algo_args["algo"]["alpha_lr"])
+            )
+            self.alpha.append(torch.exp(log_alpha.detach()))
+    
+    def _init_fixed_alpha(self):
+        """고정 알파값 초기화"""
+        self.alpha = [self.algo_args["algo"]["alpha"]] * self.num_agents
+    
+    def _calculate_target_entropy(self, agent_id):
+        """에이전트별 타겟 엔트로피 계산"""
+        action_space = self.envs.action_space[agent_id]
+        
+        if action_space.__class__.__name__ == "Box":
+            return self._calculate_continuous_target_entropy(agent_id)
+        else:
+            return self._calculate_discrete_target_entropy(action_space)
+    
+    def _calculate_continuous_target_entropy(self, agent_id):
+        """연속 액션 공간의 타겟 엔트로피 계산"""
+        if self._is_state_entropy_only():
+            entropy = -np.prod(2 * (self.num_agents - 1))
+            print(f"use_state_entropy and not use_actor_entropy, therefore target_entropy is {entropy}")
+            return entropy
+        elif self._is_both_entropy_enabled():
+            entropy = -np.prod(self.envs.action_space[agent_id].shape)
+            print(f"use_actor_entropy for decentralized and use_state_entropy for centralized, therefore target_entropy is {entropy}")
+            return entropy
+        else:
+            entropy = -np.prod(self.envs.action_space[agent_id].shape)
+            if self.tdd_args is not None:
+                print(f"use_state_entropy: {self.tdd_args['train']['use_state_entropy']}, use_actor_entropy: {self.tdd_args['train']['use_actor_entropy']}, therefore target_entropy is {entropy}")
+            else:
+                print("tdd_args is None")
+            return entropy
+    
+    def _calculate_discrete_target_entropy(self, action_space):
+        """이산 액션 공간의 타겟 엔트로피 계산"""
+        return -0.98 * np.log(1.0 / np.prod(action_space.shape))
+    
+    def _is_state_entropy_only(self):
+        """상태 엔트로피만 사용하는지 확인"""
+        return (self.tdd_args is not None 
+                and self.tdd_args["train"]["use_state_entropy"] 
+                and not self.tdd_args["train"]["use_actor_entropy"])
+    
+    def _is_both_entropy_enabled(self):
+        """상태 엔트로피와 액터 엔트로피 모두 사용하는지 확인"""
+        return (self.tdd_args is not None 
+                and self.tdd_args["train"]["use_actor_entropy"] 
+                and self.tdd_args["train"]["use_state_entropy"])
+    
+    def _prepare_actor_input(self, obs, share_obs, actions, episode_step):
+        """액터 입력을 준비하는 헬퍼 메서드"""
+        input_for_actor = obs
+        
+        if self.tdd_args is not None and self.tdd_args["network"]["use_hz_actor"]:
+            # 관찰 데이터 선택
+            input_for_actor = self._select_observation_type(obs, share_obs)
+            
+            # WM 처리
+            input_for_actor = self._process_wm_input(input_for_actor, actions, episode_step)
+        
+        return input_for_actor
+    
+    def _select_observation_type(self, obs, share_obs):
+        """관찰 타입에 따라 적절한 입력 선택"""
+        network_config = self.tdd_args["network"]
+        
+        if network_config["use_full_p_obs"]:
+            return obs
+        elif network_config["use_intra_obs"]:
+            return obs[:, :, :4]  # obs: (n_threads, n_agents, 4차원)
+        elif network_config["use_p_obs_without_others"]:
+            return obs[:, :, :(2 + 2 + 2 * self.num_agents)]  # obs: (n_threads, n_agents, ?)
+        elif network_config["use_share_obs"]:
+            return share_obs  # obs: (n_threads, n_agents, obs_dim)
+        else:
+            return obs
+    
+    def _process_wm_input(self, input_for_actor, actions, episode_step):
+        """WM(World Model) 입력 처리"""
+        if episode_step == 0:
+            return self.wm_runner.init_hz_value(
+                input_for_actor, n_rollout_threads=self.n_rollout_threads
+            )
+        else:
+            if actions is None:
+                raise ValueError("actions is None")
+            return self.wm_runner.compute_hz_value(
+                input_for_actor, actions, 
+                n_rollout_threads=self.n_rollout_threads, step=episode_step
+            )
+    
+    def _calculate_rewards(self, obs, new_obs, share_obs, new_share_obs, actions, ext_rewards, dones, episode_step, step, steps):
+        """리워드 계산을 위한 헬퍼 메서드"""
+        if self.tdd_args is None:
+            return ext_rewards
+        
+        # intrinsic reward 계수 계산
+        self._calculate_intrinsic_reward_coefficient(step, steps)
+        
+        # WM 입력 준비
+        input_for_wm, input_for_tdd, new_input_for_tdd = self._prepare_wm_inputs(obs, new_obs, share_obs, new_share_obs)
+        
+        # intrinsic reward 계산
+        int_rew, wm_rew = self._compute_intrinsic_rewards(input_for_tdd, new_input_for_tdd, input_for_wm, actions, dones, episode_step)
+        
+        # 최종 리워드 계산
+        return self._combine_rewards(ext_rewards, int_rew, wm_rew, step, steps)
+    
+    def _calculate_intrinsic_reward_coefficient(self, step, steps):
+        """intrinsic reward 계수 계산"""
+        if self.tdd_args["train"]["coeff_stop_ratio"] == 0:
+            self.int_rew_coeff = 1.0
+        else:
+            stop_step = (steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]
+            if step <= stop_step:
+                # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
+                self.int_rew_coeff = 1.0 - (step / stop_step)
+                self.int_rew_coeff = max(self.int_rew_coeff, 0.0)
+    
+    def _prepare_wm_inputs(self, obs, new_obs, share_obs, new_share_obs):
+        """WM 입력 준비"""
+        network_config = self.tdd_args["network"]
+        
+        if network_config["use_full_p_obs"] and not network_config["use_intra_obs"]:
+            input_for_wm = obs
+            input_for_tdd = None
+            new_input_for_tdd = None
+        elif network_config["use_intra_obs"]:
+            input_for_tdd = obs[:, :, :4]  # obs: (n_threads, n_agents, 4차원)
+            new_input_for_tdd = new_obs[:, :, :4]  # new_obs: (n_threads, n_agents, 4차원)
+            input_for_wm = new_share_obs
+        elif network_config["use_p_obs_without_others"]:
+            input_for_wm = obs[:, :, :(2 + 2 + 2 * self.num_agents)]  # obs: (n_threads, n_agents, ?)
+            input_for_tdd = None
+            new_input_for_tdd = None
+        elif network_config["use_share_obs"]:
+            input_for_wm = share_obs
+            input_for_tdd = None
+            new_input_for_tdd = None
+        else:
+            input_for_wm = obs[:, :, 2:4]  # obs: (n_threads, n_agents, obs_dim)
+            input_for_tdd = None
+            new_input_for_tdd = None
+        
+        return input_for_wm, input_for_tdd, new_input_for_tdd
+    
+    def _compute_intrinsic_rewards(self, input_for_tdd, new_input_for_tdd, input_for_wm, actions, dones, episode_step):
+        """intrinsic reward 계산"""
+        if dones.any():
+            int_rew = self.tdd_runner.compute_intrinsic_reward(
+                input_for_tdd.transpose(1, 0, 2), 
+                input_for_tdd.transpose(1, 0, 2), 
+                n_rollout_threads=self.n_rollout_threads
+            )
+            wm_rew = np.zeros_like(int_rew) if self.tdd_args["wm"]["use_wm"] else None
+        else:
+            int_rew = self.tdd_runner.compute_intrinsic_reward(
+                input_for_tdd.transpose(1, 0, 2), 
+                new_input_for_tdd.transpose(1, 0, 2), 
+                n_rollout_threads=self.n_rollout_threads
+            )
+            wm_rew = self._compute_wm_reward(input_for_wm, actions, episode_step) if self.tdd_args["wm"]["use_wm"] else None
+        
+        return int_rew, wm_rew
+    
+    def _compute_wm_reward(self, input_for_wm, actions, episode_step):
+        """WM 리워드 계산"""
+        if episode_step == 0:
+            self.wm_runner.compute_wm_int_rew(
+                input_for_wm[:, 0], actions, 
+                n_rollout_threads=self.n_rollout_threads, step=episode_step
+            )
+        
+        return self.wm_runner.compute_wm_int_rew(
+            input_for_wm[:, 0], actions, 
+            n_rollout_threads=self.n_rollout_threads, step=episode_step
+        )
+    
+    def _combine_rewards(self, ext_rewards, int_rew, wm_rew, step, steps):
+        """최종 리워드 조합"""
+        train_config = self.tdd_args["train"]
+        
+        if train_config["off_extrinsic_reward"]:
+            return self._calculate_intrinsic_only_rewards(int_rew, wm_rew)
+        else:
+            return self._calculate_mixed_rewards(ext_rewards, int_rew, wm_rew, step, steps)
+    
+    def _calculate_intrinsic_only_rewards(self, int_rew, wm_rew):
+        """intrinsic reward만 사용하는 경우"""
+        coeff = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"]
+        
+        if self.tdd_args["wm"]["use_wm"]:
+            return coeff * (0.05 * wm_rew + 0.5 * int_rew)
+        else:
+            return coeff * int_rew
+    
+    def _calculate_mixed_rewards(self, ext_rewards, int_rew, wm_rew, step, steps):
+        """mixed reward 계산"""
+        if self.tdd_args["wm"]["use_wm"]:
+            return self._calculate_wm_mixed_rewards(ext_rewards, int_rew, wm_rew, step, steps)
+        else:
+            return self._calculate_tdd_mixed_rewards(ext_rewards, int_rew, step, steps)
+    
+    def _calculate_wm_mixed_rewards(self, ext_rewards, int_rew, wm_rew, step, steps):
+        """WM과 함께 사용하는 mixed reward"""
+        if (step % (steps // 200)) % 2 == 0:  # 5 * 10^6 -> 5 * 10^5
+            coeff = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"]
+            wm_coeff = self.tdd_args["wm"]["wm_coeff"]
+            tdd_coeff = self.tdd_args["train"]["tdd_coeff"]
+            return (ext_rewards / 20) + coeff * (wm_coeff * wm_rew + tdd_coeff * int_rew)
+        else:
+            return ext_rewards
+    
+    def _calculate_tdd_mixed_rewards(self, ext_rewards, int_rew, step, steps):
+        """TDD만 사용하는 mixed reward"""
+        if self.tdd_args["train"]["use_phase_based_training"]:
+            if (step % (steps // 100)) % 2 == 0:  # 5 * 10^6 -> 5 * 10^5
+                coeff = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"]
+                return (ext_rewards / 100) + coeff * int_rew
+            else:
+                return ext_rewards
+        else:
+            coeff = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"]
+            return ext_rewards + coeff * int_rew
         
     def run(self):
         print(self.run_dir)
@@ -383,7 +568,7 @@ class OffPolicyBaseRunner:
             self.algo_args["train"]["update_per_train"]
             * self.algo_args["train"]["train_interval"]
         )
-        # update_num = 50
+        # update_num = 50이 기존 값인데, 내 알고리즘에선 500 * 1 쓰고 있다.
         
         """ exploration metric """
         if self.args["use_exploration_metric"]:
@@ -397,23 +582,10 @@ class OffPolicyBaseRunner:
         rollout_history_count = 0
         
         episode_step = 0
-        for step in range(steps):
-            input_for_actor = obs
-            if self.tdd_args is not None:
-                if self.tdd_args["network"]["use_hz_actor"]:
-                    if self.tdd_args["network"]["use_full_p_obs"]:
-                        input_for_actor = obs
-                    elif self.tdd_args["network"]["use_intra_obs"]:
-                        input_for_actor = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원) 텐서 아니다.
-                    elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                        input_for_actor = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
-                    elif self.tdd_args["network"]["use_share_obs"]:
-                        input_for_actor = share_obs # obs: (n_threads, n_agents, obs_dim)
-                    # action: (n_threads, n_agents, dim)
-                    if episode_step == 0:
-                        input_for_actor = self.wm_runner.init_hz_value(input_for_actor, n_rollout_threads=self.n_rollout_threads)
-                    else:
-                        input_for_actor = self.wm_runner.compute_hz_value(input_for_actor, actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
+        for step in range(1, steps + 1):
+            actions = None
+            # 액터 입력 처리
+            input_for_actor = self._prepare_actor_input(obs, share_obs, actions, episode_step)
                 
             actions = self.get_actions(
                 input_for_actor, available_actions=available_actions, add_random=True, 
@@ -428,7 +600,7 @@ class OffPolicyBaseRunner:
                 infos,
                 new_available_actions,
             ) = self.envs.step(
-                actions, episode_step if self.env_args["semi_sparse_reward"] else None
+                actions, episode_step if self.env_args["semi_sparse_reward"] or self.env_args["lifelong"] else None
             )  # rewards: (n_threads, n_agents, 1); dones: (n_threads, n_agents)
             # available_actions: (n_threads, ) of None or (n_threads, n_agents, action_number)
             # dones를 판별하는 기준은 mpe에서는 그냥 self.steps가 max_cycles 이상인지 검사해서 판별한다.
@@ -443,63 +615,8 @@ class OffPolicyBaseRunner:
                         rollout_data_for_metric[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
             """ exploration metric 끝"""
             
-            """ TDD intrinsic reward """
-            if self.tdd_args is not None:    
-                """ intrinsic reward 계수 계산 """
-                if self.tdd_args["train"]["coeff_stop_ratio"] == 0:
-                    self.int_rew_coeff = 1.0
-                else:
-                    if step <= (steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]:
-                        # 선형적으로 감소하는 계수 계산 (1.0에서 0.0으로)
-                        self.int_rew_coeff = 1.0 - (step / ((steps - 1) // self.tdd_args["train"]["coeff_stop_ratio"]))
-                        self.int_rew_coeff = max(self.int_rew_coeff, 0.0) # 사실 if문때때
-                
-                if self.tdd_args["network"]["use_full_p_obs"] and not self.tdd_args["network"]["use_intra_obs"]:
-                    input_for_wm = obs
-                elif self.tdd_args["network"]["use_intra_obs"]:
-                    input_for_tdd = obs[:, :, :4] # obs: (n_threads, n_agents, 4차원)
-                    new_input_for_tdd = new_obs[:, :, :4] # new_obs: (n_threads, n_agents, 4차원)
-                    input_for_wm = new_share_obs
-                elif self.tdd_args["network"]["use_p_obs_without_others"]:
-                    input_for_wm = obs[:, :, :(2 + 2 + 2 * (self.num_agents))] # obs: (n_threads, n_agents, ?)
-                elif self.tdd_args["network"]["use_share_obs"]:
-                    input_for_wm = share_obs
-                else:
-                    input_for_wm = obs[:, :, 2:4] # obs: (n_threads, n_agents, obs_dim)
-                if dones.any():
-                    int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_tdd.transpose(1, 0, 2), input_for_tdd.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
-                    if self.tdd_args["wm"]["use_wm"]:
-                        wm_rew = np.zeros_like(ext_rewards)
-                else:
-                    int_rew = self.tdd_runner.compute_intrinsic_reward(input_for_tdd.transpose(1, 0, 2), new_input_for_tdd.transpose(1, 0, 2), n_rollout_threads=self.n_rollout_threads)
-                    if self.tdd_args["wm"]["use_wm"]:
-                        if episode_step == 0:
-                            self.wm_runner.compute_wm_int_rew(share_obs[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
-                            wm_rew = self.wm_runner.compute_wm_int_rew(input_for_wm[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
-                        else:
-                            wm_rew = self.wm_runner.compute_wm_int_rew(input_for_wm[:, 0], actions, n_rollout_threads=self.n_rollout_threads, step=episode_step)
-                
-                if self.tdd_args["train"]["off_extrinsic_reward"]:
-                    if self.tdd_args["wm"]["use_wm"]:
-                        rewards = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (0.05 * wm_rew + 0.5 * int_rew)
-                    else:
-                        rewards = self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
-                else:
-                    if self.tdd_args["wm"]["use_wm"]:
-                        if (step % (steps // 200)) % 2 == 0:   # 5 * 10^6 -> 5 * 10^5
-                            rewards = (ext_rewards / 20) + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * (self.tdd_args["wm"]["wm_coeff"] * wm_rew + self.tdd_args["train"]["tdd_coeff"] * int_rew)
-                        else:
-                            rewards = ext_rewards
-                        
-                    else:
-                        if (step % (steps // 100)) % 2 == 0:   # 5 * 10^6 -> 5 * 10^5
-                            rewards = (ext_rewards / 100) + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
-                        else:
-                            rewards = ext_rewards
-                        # rewards = ext_rewards + self.int_rew_coeff * self.tdd_args["train"]["coeff_magnitude"] * int_rew
-            else:
-                rewards = ext_rewards
-            """ TDD intrinsic reward 끝 """
+            # TDD intrinsic reward 계산
+            rewards = self._calculate_rewards(obs, new_obs, share_obs, new_share_obs, actions, ext_rewards, dones, episode_step, step, steps)
             
             next_share_obs = new_share_obs.copy()
             next_available_actions = new_available_actions.copy()   # 이건 env.step의 아웃풋 중 하나. MPE세팅에서는 None.
@@ -598,9 +715,12 @@ class OffPolicyBaseRunner:
                         self.writer.add_scalar("actor_loss/agent_2", actor_loss_ls[2], step)
                         self.writer.add_scalar("alpha_loss", alpha_loss, step)
                         self.writer.add_scalar("int_rew_coeff", self.int_rew_coeff, step)
-                        if self.tdd_args["wm"]["use_wm"]:
-                            self.writer.add_scalar("max_wm_rew", wm_rew.max(), step)
-                        self.writer.add_scalar("max_int_rew", int_rew.max(), step)
+                        if self.tdd_args is not None and self.tdd_args["wm"]["use_wm"]:
+                            # WM 리워드는 별도로 계산해야 함
+                            pass
+                        if self.tdd_args is not None:
+                            # intrinsic 리워드는 별도로 계산해야 함
+                            pass
                         self.writer.add_scalar("max_reward", rewards.max(), step)
                 self.writer.add_scalar("rollout_history_count", rollout_history_count, step)
             else:
@@ -810,7 +930,7 @@ class OffPolicyBaseRunner:
                     dones,
                     infos,
                     new_available_actions,
-                ) = self.envs.step(actions, episode_step if self.env_args["semi_sparse_reward"] else None) 
+                ) = self.envs.step(actions, episode_step if self.env_args["semi_sparse_reward"] or self.env_args["lifelong"] else None) 
                 # continuous action space에서는 new_available_actions도 계속 None, None이 된다.
                 
                 next_obs = new_obs.copy()
@@ -1254,7 +1374,7 @@ class OffPolicyBaseRunner:
                 eval_dones, # (n_threads, n_agents)
                 eval_infos,
                 eval_available_actions,
-            ) = self.eval_envs.step(eval_actions, one_episode_len[0] if self.env_args["semi_sparse_reward"] else None)
+            ) = self.eval_envs.step(eval_actions, one_episode_len[0] if self.env_args["semi_sparse_reward"] or self.env_args["lifelong"] else None)
             
             # intrinsic rewards 계산 (TDD가 있는 경우)
             if self.tdd_args is not None:
@@ -1559,7 +1679,7 @@ class OffPolicyBaseRunner:
                         eval_dones,
                         _,
                         eval_available_actions,
-                    ) = self.envs.step(eval_actions[0], one_episode_len[0] if self.env_args["semi_sparse_reward"] else None)
+                    ) = self.envs.step(eval_actions[0], step if self.env_args["semi_sparse_reward"] or self.env_args["lifelong"] else None)
                     
                     step_reward = eval_rewards[0][0]
                     if eval_rewards[0][0] != eval_rewards[1][0]:
@@ -1690,3 +1810,117 @@ class OffPolicyBaseRunner:
             self.writer.export_scalars_to_json(str(self.log_dir + "/summary.json"))
             self.writer.close()
             self.log_file.close()
+
+    def _setup_basic_config(self, args, algo_args, env_args):
+        """기본 설정 초기화"""
+        self.args = args
+        self.algo_args = algo_args
+        self.env_args = env_args
+        self.n_rollout_threads = self.algo_args["train"]["n_rollout_threads"]
+
+    def _setup_algorithm_config(self):
+        """알고리즘 관련 설정 초기화"""
+        # Policy frequency 설정
+        self.policy_freq = self.algo_args["algo"].get("policy_freq", DEFAULT_POLICY_FREQ)
+        
+        # State type 설정 (MPE의 경우 EP)
+        self.state_type = self.env_args.get("state_type", DEFAULT_STATE_TYPE)
+        
+        # Parameter sharing 설정 (False가 좋다고 판단)
+        self.share_param = self.algo_args["algo"]["share_param"]
+        
+        # Fixed order 설정 (False가 낫다고 판단)
+        self.fixed_order = self.algo_args["algo"]["fixed_order"]
+
+    def _setup_environment_config(self):
+        """환경 및 시스템 설정 초기화"""
+        # 시드 설정
+        set_seed(self.algo_args["seed"])
+        
+        # 디바이스 설정
+        self.device = init_device(self.algo_args["device"])
+        
+        # 태스크 이름 설정
+        self.task_name = get_task_name(self.args["env"], self.env_args)
+        
+        # 프로세스 이름 설정
+        setproctitle.setproctitle(
+            f"{self.args['algo']}-{self.args['env']}-{self.args['exp_name']}"
+        )
+
+    def _setup_logging_config(self, args, algo_args, env_args, tdd_args):
+        """디렉토리 및 로깅 설정 초기화"""
+        if not self.algo_args["render"]["use_render"]:
+            # 디렉토리 초기화
+            self.run_dir, self.log_dir, self.save_dir, self.writer = init_dir(
+                args["env"],
+                env_args,
+                args["algo"],
+                args["exp_name"],
+                algo_args["seed"]["seed"],
+                logger_path=algo_args["logger"]["log_dir"],
+            )
+            
+            # 설정 저장
+            save_config(args, algo_args, env_args, tdd_args, self.run_dir)
+            
+            # 로그 파일 열기
+            self.log_file = open(
+                os.path.join(self.run_dir, "progress.txt"), "w", encoding="utf-8"
+            )
+
+    def _setup_environments(self, args, algo_args, env_args):
+        """환경 초기화 (렌더링/훈련 환경 설정)"""
+        if self.algo_args["render"]["use_render"]:  # 렌더링용 환경
+            (
+                self.envs,
+                self.manual_render,
+                self.manual_expand_dims,
+                self.manual_delay,
+                self.env_num,
+            ) = make_render_env(args["env"], algo_args["seed"]["seed"], env_args)
+        else:  # 훈련 및 평가용 환경
+            self.envs = make_train_env(
+                args["env"],
+                algo_args["seed"]["seed"],
+                algo_args["train"]["n_rollout_threads"],
+                env_args,
+            )
+            self.eval_envs = (
+                make_eval_env(
+                    args["env"],
+                    algo_args["seed"]["seed"],
+                    algo_args["eval"]["n_eval_rollout_threads"],
+                    env_args,
+                )
+                if algo_args["eval"]["use_eval"]
+                else None
+            )
+
+    def _setup_agents(self):
+        """에이전트 관련 설정"""
+        # 에이전트 수 설정
+        self.num_agents = get_num_agents(self.args["env"], self.env_args, self.envs)
+        
+        # 에이전트 데스 상태 초기화
+        self.agent_deaths = np.zeros(
+            (self.n_rollout_threads, self.num_agents, 1)
+        )
+
+        # 액션 스페이스 설정
+        self.action_spaces = self.envs.action_space
+        self.act_n_before = np.zeros(
+            (self.num_agents, self.n_rollout_threads, self.action_spaces[0].shape[0])
+        )
+        
+        # 각 에이전트의 액션 스페이스에 시드 설정
+        for agent_id in range(self.num_agents):
+            self.action_spaces[agent_id].seed(
+                self.algo_args["seed"]["seed"] + agent_id + 1
+            )
+
+    def _print_environment_info(self):
+        """환경 정보 디버깅 출력"""
+        print("share_observation_space: ", self.envs.share_observation_space)
+        print("observation_space: ", self.envs.observation_space)
+        print("action_space: ", self.envs.action_space)

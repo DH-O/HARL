@@ -1,1 +1,1 @@
-python train.py --algo hasac --env pettingzoo_mpe --exp_name NoWM_CS1_5_SSpar_Range01_RandSeed_CoM8_Tdd1_PhaseBased --use_exploration_metric 1 --use_tdd 1
+python train.py --algo hasac --env pettingzoo_mpe --exp_name CS1_5_Conti_3514_CoM7_5_Tdd1_LSR5_WOBS_R1_2_ShParam --use_exploration_metric 1 --use_tdd 1

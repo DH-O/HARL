@@ -1,9 +1,9 @@
 # This is the configuration file for the HASAC algorithm.
 seed:
   # whether to use the specified seed
-  seed_specify: False
+  seed_specify: True
   # seed
-  seed: 5589
+  seed: 3514
 device:
   # whether to use CUDA
   cuda: True
@@ -94,7 +94,7 @@ algo:
   # huber delta
   huber_delta: 10.0
   # whether to share parameter among actors
-  share_param: False
+  share_param: True
   # whether to use a fixed optimisation order
   fixed_order: False
 logger:

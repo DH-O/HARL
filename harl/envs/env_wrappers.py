@@ -169,6 +169,8 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
     while True:
         cmd, data = remote.recv()
         if cmd == "step":
+            if data[0].shape[0] != env.n_agents:
+                raise ValueError(f"data[0].shape[0] must be equal to env.n_agents, but got {data[0].shape[0]} and {env.n_agents}")
             ob, s_ob, reward, done, info, available_actions = env.step(data[0])
             if "bool" in done.__class__.__name__:  # done is a bool
                 if (
@@ -187,57 +189,222 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                     info[0]["original_avail_actions"] = copy.deepcopy(available_actions)
                     ob, s_ob, available_actions = env.reset()
 
+            # 100 스텝마다 랜드마크 위치와 개수 변경
+            if data[1] is not None:  # episode_step이 전달된 경우
+                episode_step = data[1]
+                map_size = getattr(env.env.aec_env.env.env.env.env, 'map_size', 1.0)
+                
+                # 랜드마크 업데이트 호출
+                if episode_step % 99 == 0 and episode_step > 0:
+                    # 랜드마크 위치와 개수 변경
+                    world = env.env.aec_env.env.env.env.env.world
+                    
+                    # 현재 랜드마크 개수 확인
+                    current_landmarks = [entity for entity in world.landmarks if entity.name.startswith('landmark')]
+                    
+                    # wall 정보 가져오기
+                    walls = [entity for entity in world.landmarks if entity.name.startswith('wall')]
+                    
+                    # 랜드마크 개수를 1-3개 사이에서 랜덤하게 변경
+                    import random
+                    new_num_landmarks = random.randint(1, 3)
+                    
+                    # 기존 랜드마크 제거
+                    for landmark in current_landmarks:
+                        world.landmarks.remove(landmark)
+                    
+                    # 새로운 랜드마크 생성 (wall과의 거리 고려)
+                    from pettingzoo.mpe._mpe_utils.core import Landmark
+                    min_distance_from_wall = 0.15  # wall과의 최소 거리 (조정 가능)
+                    min_distance_between_landmarks = 0.4  # 랜드마크 간 최소 거리 (조정 가능)
+                    max_attempts = 50  # 최대 시도 횟수 (랜드마크 위치 찾기 실패 시)
+                    
+                    if new_num_landmarks > env.n_agents:
+                        raise ValueError(f"new_num_landmarks must be less than or equal to the number of current landmarks, but got {new_num_landmarks} and {env.n_agents}")
+                    # if new_num_landmarks < env.n_agents:
+                    #     print(f"new_num_landmarks is less than the number of agents, so some landmarks will be removed")
+                    
+                    for i in range(new_num_landmarks):
+                        landmark = Landmark()
+                        landmark.name = f'landmark_{i}'
+                        landmark.collide = False
+                        landmark.movable = False
+                        landmark.size = 0.03  # landmark_size from config
+                        landmark.weight = random.randint(1, 3)  # 1, 2, 3 중 하나의 값을 랜덤하게 선택
+                        if landmark.weight == 1:
+                            landmark.color = np.array([0.0, 0.0, 1.0])
+                        elif landmark.weight == 2:
+                            landmark.color = np.array([0.0, 1.0, 0.0])
+                        elif landmark.weight == 3:
+                            landmark.color = np.array([1.0, 0.0, 0.0])
+                        else:
+                            raise ValueError(f"landmark.weight must be 1, 2, or 3, but got {landmark.weight}")
+                        
+                        # wall과의 거리를 고려한 위치 설정
+                        valid_position = False
+                        attempts = 0
+                        
+                        while not valid_position and attempts < max_attempts:
+                            # 랜덤 위치 생성 (map_size 범위 내)
+                            candidate_pos = np.random.uniform(-map_size, map_size, 2)
+                            
+                            # wall과의 거리 확인
+                            valid_position = True
+                            for wall in walls:
+                                wall_pos = wall.state.p_pos
+                                wall_width = wall.width
+                                wall_height = wall.height
+                                
+                                # wall의 중심에서 가장 가까운 점까지의 거리 계산
+                                # wall이 직사각형이라고 가정하고 각 모서리까지의 거리 중 최소값 사용
+                                
+                                # wall의 경계까지의 거리 계산 (직사각형 wall 고려)
+                                # wall의 경계 상자 내부에 있는지 확인
+                                if (abs(candidate_pos[0] - wall_pos[0]) <= wall_width and 
+                                    abs(candidate_pos[1] - wall_pos[1]) <= wall_height):
+                                    # wall 내부에 있으면 무조건 거리 0
+                                    valid_position = False
+                                    break
+                                
+                                # wall 경계까지의 최단 거리 계산
+                                dx = max(0, abs(candidate_pos[0] - wall_pos[0]) - wall_width)
+                                dy = max(0, abs(candidate_pos[1] - wall_pos[1]) - wall_height)
+                                distance_to_wall = np.sqrt(dx**2 + dy**2)
+                                
+                                if distance_to_wall < min_distance_from_wall:
+                                    valid_position = False
+                                    break
+                            
+                            # 기존 랜드마크들과의 거리 확인 (랜드마크 간 겹침 방지)
+                            if valid_position:
+                                for existing_landmark in world.landmarks:
+                                    if existing_landmark.name.startswith('landmark'):
+                                        distance_to_landmark = np.linalg.norm(candidate_pos - existing_landmark.state.p_pos)
+                                        if distance_to_landmark < min_distance_between_landmarks:
+                                            valid_position = False
+                                            break
+                            
+                            if valid_position:
+                                landmark.state.p_pos = candidate_pos
+                                landmark.state.p_vel = np.zeros(world.dim_p)
+                                world.landmarks.append(landmark)
+                                break
+                            
+                            attempts += 1
+                        
+                        # 최대 시도 횟수 초과 시 기본 위치 사용
+                        if not valid_position:
+                            landmark.state.p_pos = np.random.uniform(-map_size * 0.5, map_size * 0.5, 2)
+                            landmark.state.p_vel = np.zeros(world.dim_p)
+                            world.landmarks.append(landmark)
+
             landmarks = []
             for entity in env.env.aec_env.env.env.env.env.world.landmarks:
                 if entity.name.startswith('landmark'):
-                    landmarks.append({
+                    landmark_info = {
                         'position': entity.state.p_pos,
                         'size': entity.size
-                    })
+                    }
+                    # weight 속성이 있으면 포함
+                    if hasattr(entity, 'weight'):
+                        landmark_info['weight'] = entity.weight
+                    landmarks.append(landmark_info)
+            
+            """ weight 기반 추가 리워드 계산 """
+            if len(landmarks) > 0 and len(ob) > 0:
+                additional_reward = 0.0
+                agent_positions = []
+                
+                # 설정 가능한 파라미터들
+                landmark_sparse_reward = 5.0  # 랜드마크 sparse 리워드 (조정 가능)
+                landmark_detection_radius_multiplier = 1.2  # 랜드마크 감지 반경 배수 (조정 가능)
+                
+                # 에이전트 위치 수집 (obs에서 에이전트 위치 추출)
+                for agent_idx in range(len(ob)):
+                    if len(ob[agent_idx]) >= 4:  # 최소 4차원 필요 (x, y, vx, vy)
+                        agent_pos = ob[agent_idx][2:4]  # x, y 좌표
+                        agent_positions.append(agent_pos)
+                
+                # 각 랜드마크에 대해 weight 기반 리워드 계산
+                for landmark_idx, landmark in enumerate(landmarks):
+                    if 'weight' in landmark:
+                        landmark_pos = landmark['position']
+                        landmark_weight = landmark['weight']
+                        landmark_size = landmark['size']
+                        
+                        # 랜드마크 주변에 있는 에이전트 수 계산
+                        agents_near_landmark = 0
+                        # total_distance = 0.0
+                        
+                        for agent_pos in agent_positions:
+                            distance = np.sqrt(np.sum((agent_pos - landmark_pos)**2))
+                            detection_radius = landmark_size * landmark_detection_radius_multiplier
+                            
+                            if distance <= detection_radius:
+                                agents_near_landmark += 1
+                                # total_distance += distance
+                        
+                        # weight만큼의 에이전트가 모였을 때 추가 리워드
+                        required_agents = int(landmark_weight)
+                        if agents_near_landmark <= required_agents and agents_near_landmark > 0:
+                            # 거리 기반 차등 리워드 (더 가까이 있을수록 더 많은 리워드)
+                            # avg_distance = total_distance / agents_near_landmark if agents_near_landmark > 0 else 0
+                            # distance_factor = max(0.5, 1.0 - (avg_distance / detection_radius))
+                            
+                            additional_reward += landmark_sparse_reward * landmark_weight
+                            
+                            # 디버깅을 위한 로그 (필요시 주석 해제)
+                            # print(f"Landmark {landmark_idx}: weight={landmark_weight:.1f}, agents={agents_near_landmark}, reward={landmark_reward:.2f}")
+                
+                # 추가 리워드를 기존 리워드에 더함
+                if additional_reward > 0:
+                    for agent_idx in range(len(reward)):
+                        reward[agent_idx] = [additional_reward + reward[agent_idx][0]]
+            
             
             # 랜드마크와의 상대변위 처리 및 시야 범위 적용
-            if data[1] is not None:
-                if len(landmarks) > 0:  # ob가 충분한 차원을 가지는지 확인
-                    # sum_min_dist_lm_wise = 0
-                    # for i in range(len(landmarks)):
-                    #     relative_pos_landmark_wise = []
-                    #     for agent_idx in range(len(ob)):
-                    #         relative_pos_landmark_wise.append(ob[agent_idx][4 + 2 * i:6 + 2 * i])
-                    #     sum_min_dist_lm_wise += np.min(np.sqrt(np.sum(np.array(relative_pos_landmark_wise)**2, axis=1)))
+            # if data[1] is not None:
+            #     if len(landmarks) > 0:  # ob가 충분한 차원을 가지는지 확인
+            #         # sum_min_dist_lm_wise = 0
+            #         # for i in range(len(landmarks)):
+            #         #     relative_pos_landmark_wise = []
+            #         #     for agent_idx in range(len(ob)):
+            #         #         relative_pos_landmark_wise.append(ob[agent_idx][4 + 2 * i:6 + 2 * i])
+            #         #     sum_min_dist_lm_wise += np.min(np.sqrt(np.sum(np.array(relative_pos_landmark_wise)**2, axis=1)))
                         
-                    for agent_idx in range(len(ob)):
-                        # 5번째부터 10번째 차원까지 (인덱스 4부터 9까지) 처리
-                        for i in range(min(3, len(landmarks))):  # 최대 3개의 랜드마크 처리
-                            start_idx = 4 + 2 * i  # 각 랜드마크의 시작 인덱스
-                            end_idx = start_idx + 2  # 각 랜드마크의 끝 인덱스
+            #         for agent_idx in range(len(ob)):
+            #             # 5번째부터 10번째 차원까지 (인덱스 4부터 9까지) 처리
+            #             for i in range(min(3, len(landmarks))):  # 최대 3개의 랜드마크 처리
+            #                 start_idx = 4 + 2 * i  # 각 랜드마크의 시작 인덱스
+            #                 end_idx = start_idx + 2  # 각 랜드마크의 끝 인덱스
                             
-                            if end_idx <= len(ob[agent_idx]):  # 인덱스 범위 확인
-                                # 현재 랜드마크와의 상대변위 (2차원)
-                                relative_pos = ob[agent_idx][start_idx:end_idx]
+            #                 if end_idx <= len(ob[agent_idx]):  # 인덱스 범위 확인
+            #                     # 현재 랜드마크와의 상대변위 (2차원)
+            #                     relative_pos = ob[agent_idx][start_idx:end_idx]
                                 
-                                # 거리 계산 (유클리드 거리)
-                                distance = np.sqrt(np.sum(relative_pos**2))
+            #                     # 거리 계산 (유클리드 거리)
+            #                     distance = np.sqrt(np.sum(relative_pos**2))
                                 
-                                # 거리가 현재 시야보다 크면 (최소 시야는 0.1), 0으로 마스킹하고 리워드는 충돌 리워드는 유지한채로 극단적 패널티
-                                # if distance > max(0.1, (np.sqrt(2) * 2 * ((500 - data[1]) / env.max_cycles))):
-                                #     ob[ob_idx][start_idx:end_idx] = 0.0
-                                #     reward[ob_idx] += 0.5 * sum_min_dist_lm_wise * 3
-                                #     reward[ob_idx] -= 0.5 * np.sqrt(2) * 2 * 3 * 3
+            #                     # 거리가 현재 시야보다 크면 (최소 시야는 0.1), 0으로 마스킹하고 리워드는 충돌 리워드는 유지한채로 극단적 패널티
+            #                     # if distance > max(0.1, (np.sqrt(2) * 2 * ((500 - data[1]) / env.max_cycles))):
+            #                     #     ob[ob_idx][start_idx:end_idx] = 0.0
+            #                     #     reward[ob_idx] += 0.5 * sum_min_dist_lm_wise * 3
+            #                     #     reward[ob_idx] -= 0.5 * np.sqrt(2) * 2 * 3 * 3
                                 
-                                if distance > 0.1:
-                                    ob[agent_idx][start_idx:end_idx] = 0.0
+            #                     if distance > 0.1:
+            #                         ob[agent_idx][start_idx:end_idx] = 0.0
             
             remote.send((ob, s_ob, reward, done, info, available_actions))
         elif cmd == "reset":
             ob, s_ob, available_actions = env.reset()
             
-            landmarks = []
-            for entity in env.env.aec_env.env.env.env.env.world.landmarks:
-                if entity.name.startswith('landmark'):
-                    landmarks.append({
-                        'position': entity.state.p_pos,
-                        'size': entity.size
-                    })
+            # landmarks = []
+            # for entity in env.env.aec_env.env.env.env.env.world.landmarks:
+            #     if entity.name.startswith('landmark'):
+            #         landmarks.append({
+            #             'position': entity.state.p_pos,
+            #             'size': entity.size
+            #         })
             
             # 랜드마크와의 상대변위 처리 및 시야 범위 적용
             # if len(landmarks) > 0:  # ob가 충분한 차원을 가지는지 확인
@@ -294,10 +461,14 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                         'size': entity.size
                     })
                 else:
-                    landmarks.append({
+                    landmark_info = {
                         'position': entity.state.p_pos,
                         'size': entity.size
-                    })
+                    }
+                    # weight 속성이 있으면 포함
+                    if hasattr(entity, 'weight'):
+                        landmark_info['weight'] = entity.weight
+                    landmarks.append(landmark_info)
             remote.send((landmarks, obstacles))
         else:
             raise NotImplementedError

@@ -42,10 +42,12 @@ train:
   # tdd coeff
   tdd_coeff: 1
   # coeff magnitude
-  coeff_magnitude: 8
+  coeff_magnitude: 7.5
   # learning rate
   learning_rate: 1e-3
   
+  # use phase based training
+  use_phase_based_training: False
   # use updated inter-agent intrinsic reward
   use_updated_inter: False
   # coeff for inter-agent intrinsic reward

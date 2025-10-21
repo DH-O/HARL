@@ -5,8 +5,9 @@ map_size: 1
 N: 3  # 3기준 900이 좋아보임 600도 시도중
 max_cycles: 500
 use_wall: True
+lifelong: True
 sparse_reward: False
-semi_sparse_reward: True
+semi_sparse_reward: False
 agent_size: 0.04
-landmark_size: 0.02
+landmark_size: 0.03
 agent_wise_distance: False
