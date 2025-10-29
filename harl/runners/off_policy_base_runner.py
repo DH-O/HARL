@@ -6,6 +6,7 @@ import torch
 import imageio
 import numpy as np
 import setproctitle
+from gym.spaces import Discrete
 from harl.utils.logger import Logger
 
 # 상수 정의
@@ -36,6 +37,9 @@ from harl.common.buffers.off_policy_buffer_fp import OffPolicyBufferFP
 """ TDD, WM 관련 """
 from harl.runners.DHO_runner import TddRunner, WM_Runner
 """ TDD, WM 관련 끝 """
+""" ORCA 관련 """
+from harl.utils.orca_wrapper import ORCAWrapper
+""" ORCA 관련 끝 """
 
 def plot_rollout_trajectory(rollout_data, n_roll_out_threads, n_agents, save_dir, map_size, step=None, warmup=False):
         save_dir =  save_dir + "/exploration_metric"
@@ -153,6 +157,26 @@ class OffPolicyBaseRunner:
             self.wm_runner = WM_Runner(self.share_obs_dim, self.action_spaces, self.algo_args, self.env_args, self.tdd_args)
         """ TDD 관련 끝 """
         
+        """ ORCA 관련 """
+        if self.algo_args["train"]["use_hisac"]:
+            # Initialize simple ORCA wrapper (no RVO2 dependency)
+            agent_radius = env_args.get("agent_size", 0.3)
+            max_speed = 8.0
+            time_step = 0.1
+            map_size = env_args.get("map_size", 1.0)
+            
+            self.orca_wrapper = ORCAWrapper(
+                num_agents=self.num_agents,
+                agent_radius=agent_radius,
+                max_speed=max_speed,
+                time_step=time_step,
+                map_size=map_size
+            )
+            print(f"Simple ORCA wrapper initialized: {self.num_agents} agents, radius={agent_radius}, max_speed={max_speed}, map_size={map_size}")
+        else:
+            self.orca_wrapper = None
+        """ ORCA 관련 끝 """
+        
         # 액터 초기화
         self._init_actors(args, algo_args, tdd_args)
 
@@ -213,7 +237,11 @@ class OffPolicyBaseRunner:
         """에이전트 생성 헬퍼 메서드"""
         params = base_params.copy()
         obs_space = self.envs.observation_space[agent_id]
-        action_space = self.envs.action_space[agent_id]
+        if self.algo_args["train"]["use_hisac"]:
+            action_space_dim = len(self.envs.observation_space)
+            action_space = Discrete(action_space_dim)
+        else:
+            action_space = self.envs.action_space[agent_id]
         
         # TDD 관련 추가 파라미터
         wm_param = None
@@ -247,7 +275,7 @@ class OffPolicyBaseRunner:
         self.critic = CRITIC_REGISTRY[args["algo"]](
             base_params,
             self.envs.share_observation_space[0],
-            self.envs.action_space,
+            self.envs.action_space if not self.algo_args["train"]["use_hisac"] else [Discrete(self.num_agents)] * self.num_agents,
             self.num_agents,
             self.state_type,
             wm_param,
@@ -264,7 +292,7 @@ class OffPolicyBaseRunner:
                 self.envs.share_observation_space[0],
                 self.num_agents,
                 self.envs.observation_space,
-                self.envs.action_space,
+                self.envs.action_space if not self.algo_args["train"]["use_hisac"] else [Discrete(self.num_agents)] * self.num_agents,
             )
         elif self.state_type == "FP":
             self.buffer = OffPolicyBufferFP(
@@ -272,7 +300,7 @@ class OffPolicyBaseRunner:
                 self.envs.share_observation_space[0],
                 self.num_agents,
                 self.envs.observation_space,
-                self.envs.action_space,
+                self.envs.action_space if not self.algo_args["train"]["use_hisac"] else [Discrete(self.num_agents)] * self.num_agents,
             )
         else:
             raise NotImplementedError(f"Unsupported state_type: {self.state_type}")
@@ -319,7 +347,7 @@ class OffPolicyBaseRunner:
     
     def _calculate_target_entropy(self, agent_id):
         """에이전트별 타겟 엔트로피 계산"""
-        action_space = self.envs.action_space[agent_id]
+        action_space = self.envs.action_space[agent_id] if not self.algo_args["train"]["use_hisac"] else Discrete(self.num_agents)
         
         if action_space.__class__.__name__ == "Box":
             return self._calculate_continuous_target_entropy(agent_id)
@@ -346,7 +374,15 @@ class OffPolicyBaseRunner:
     
     def _calculate_discrete_target_entropy(self, action_space):
         """이산 액션 공간의 타겟 엔트로피 계산"""
-        return -0.98 * np.log(1.0 / np.prod(action_space.shape))
+        if action_space.__class__.__name__ == "Discrete":
+            num_actions = action_space.n
+        elif action_space.__class__.__name__ == "MultiDiscrete":
+            # MultiDiscrete의 경우 모든 차원의 액션 개수를 곱해야 함
+            num_actions = np.prod(action_space.nvec) if hasattr(action_space, 'nvec') else np.prod(action_space.shape)
+        else:
+            raise NotImplementedError(f"Unsupported action_space: {action_space.__class__.__name__}")
+        
+        return -0.98 * np.log(1.0 / num_actions)
     
     def _is_state_entropy_only(self):
         """상태 엔트로피만 사용하는지 확인"""
@@ -586,11 +622,22 @@ class OffPolicyBaseRunner:
             actions = None
             # 액터 입력 처리
             input_for_actor = self._prepare_actor_input(obs, share_obs, actions, episode_step)
+            
+            if self.algo_args["train"]["use_hisac"]:
+                # Get target allocations from actor policy
+                available_targets = np.array([[[1] * self.num_agents] * self.num_agents] * self.n_rollout_threads)
+                targets = self.get_actions(
+                    input_for_actor, available_actions=available_targets, add_random=True, 
+                    use_wm=self.tdd_args["wm"]["use_wm"] if self.tdd_args is not None else False
+                )
                 
-            actions = self.get_actions(
-                input_for_actor, available_actions=available_actions, add_random=True, 
-                use_wm=self.tdd_args["wm"]["use_wm"] if self.tdd_args is not None else False
-            )
+                # Use ORCA to compute actual actions from targets
+                actions = self.orca_wrapper.compute_actions(obs, targets)
+            else:
+                actions = self.get_actions(
+                    input_for_actor, available_actions=available_actions, add_random=True, 
+                    use_wm=self.tdd_args["wm"]["use_wm"] if self.tdd_args is not None else False
+                )
             
             (
                 new_obs,
@@ -615,7 +662,7 @@ class OffPolicyBaseRunner:
                         rollout_data_for_metric[env_id][agent_id].append([xy_coords[0], xy_coords[1], step])
             """ exploration metric 끝"""
             
-            # TDD intrinsic reward 계산
+            # 리워드 계산
             rewards = self._calculate_rewards(obs, new_obs, share_obs, new_share_obs, actions, ext_rewards, dones, episode_step, step, steps)
             
             next_share_obs = new_share_obs.copy()
@@ -623,17 +670,17 @@ class OffPolicyBaseRunner:
             data = (
                 share_obs,
                 obs.transpose(1, 0, 2),
-                actions.transpose(1, 0, 2),
-                available_actions.transpose(1, 0, 2)
-                if len(np.array(available_actions).shape) == 3
+                targets.transpose(1, 0, 2),
+                available_targets.transpose(1, 0, 2)
+                if len(np.array(available_targets).shape) == 3
                 else None,  # 이거 None 찍힘. env.reset()때부터 계속 None.
                 rewards,
                 dones,
                 infos,  # 얘도 그냥 비어 있음. 근데 가끔 채워짐.
                 next_share_obs,
                 next_obs,
-                next_available_actions.transpose(1, 0, 2)
-                if len(np.array(available_actions).shape) == 3
+                available_targets.transpose(1, 0, 2)
+                if len(np.array(available_targets).shape) == 3
                 else None,
             )
             episode_step = self.insert(data, episode_step)   # 롤아웃 버퍼도 충전
@@ -921,7 +968,20 @@ class OffPolicyBaseRunner:
             
             for step in range(warmup_steps):
                 # action: (n_threads, n_agents, dim)
-                actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
+                if self.algo_args["train"]["use_hisac"]:
+                    available_targets = np.array([[[1] * self.num_agents] * self.num_agents] * n_rollout_threads)
+                    targets = self.sample_actions(available_targets)    # (n_threads, n_agents, 1)
+                    
+                    # Use ORCA to compute actual actions
+                    actions = self.orca_wrapper.compute_actions(obs, targets)
+                    
+                    # Debug output for first few steps
+                    if step < 3 and n_rollout_threads > 0:
+                        print(f"\n[Warmup Step {step}]")
+                        for agent_id in range(min(2, self.num_agents)):
+                            print(f"  Agent {agent_id}: Target {targets[0, agent_id, 0]} -> Action {actions[0, agent_id]} in case 0th thread") # 0번째 스레드의 agent_id번째 에이전트의 target과 action을 출력한다.
+                else:
+                    actions = self.sample_actions(available_actions)    # available_actions는 discrete action space일 때만 존재한다.
                 
                 (
                     new_obs,
@@ -939,17 +999,17 @@ class OffPolicyBaseRunner:
                 data = (
                     share_obs,
                     obs.transpose(1, 0, 2), # 리플레이 버퍼에 데이터를 저장할 때, 에이전트 단위로 데이터를 저장하기 위함    # 롤아웃 버퍼도 저렇게 해야하는지 좀 고민이 되긴 하다
-                    actions.transpose(1, 0, 2),
-                    available_actions.transpose(1, 0, 2)
-                    if len(np.array(available_actions).shape) == 3
+                    targets.transpose(1, 0, 2),
+                    available_targets.transpose(1, 0, 2)
+                    if len(np.array(available_targets).shape) == 3
                     else None,
                     rewards,
                     dones,
                     infos,
                     next_share_obs,
                     next_obs,   # 얘는 그런데 에이전트 단위로 저장 안 해도 되나보다?
-                    next_available_actions.transpose(1, 0, 2)
-                    if len(np.array(available_actions).shape) == 3
+                    available_targets.transpose(1, 0, 2)
+                    if len(np.array(available_targets).shape) == 3
                     else None,
                 )
                 episode_step = self.insert(data, episode_step, True)
@@ -1254,7 +1314,7 @@ class OffPolicyBaseRunner:
                         ).sample()
                     )
             actions.append(action)
-        if self.envs.action_space[agent_id].__class__.__name__ == "Discrete":
+        if self.envs.action_space[agent_id].__class__.__name__ == "Discrete" or self.algo_args["train"]["use_hisac"]:
             return np.expand_dims(np.array(actions).transpose(1, 0), axis=-1)
 
         return np.array(actions).transpose(1, 0, 2) # (n_threads, n_agents, dim)
@@ -1354,19 +1414,26 @@ class OffPolicyBaseRunner:
         eval_data_dir = os.path.join(self.save_dir, "eval", f"cur_step_{cur_step}")
         os.makedirs(eval_data_dir, exist_ok=True)
         
-        # Video/GIF 관련 변수
-        gif_frames = []
-        video_writer = None
+        # Video/GIF 관련 변수 (각 스레드별로 관리)
+        gif_frames_list = [[] for _ in range(n_eval_rollout_threads)]
+        video_writer_list = [None for _ in range(n_eval_rollout_threads)]
         
         while True:
             temp_eval_data_dir = os.path.join(self.save_dir, "eval", f"cur_step_{cur_step}", f"eval_episode_{eval_episode}")
             os.makedirs(temp_eval_data_dir, exist_ok=True)
             
             eval_input = eval_obs
-            
-            eval_actions = self.get_actions(
-                eval_input, available_actions=eval_available_actions, add_random=False
-            )
+            targets = None  # Initialize targets
+            if self.algo_args["train"]["use_hisac"]:
+                available_targets = np.array([[[1] * self.num_agents] * self.num_agents] * n_eval_rollout_threads)
+                targets = self.get_actions(
+                    eval_input, available_actions=available_targets, add_random=False
+                )
+                eval_actions = self.orca_wrapper.compute_actions(eval_obs, targets)
+            else:
+                eval_actions = self.get_actions(
+                    eval_input, available_actions=eval_available_actions, add_random=False
+                )
             (
                 next_eval_obs,   # (n_threads, n_agents, obs_dim)
                 next_eval_share_obs,
@@ -1458,53 +1525,100 @@ class OffPolicyBaseRunner:
                                     step=cur_step
                                 )
 
-            # 비디오/GIF 생성 (최적화)
-            if one_episode_len[0] % 2 == 0:  # 2 스텝마다만 프레임 저장
-                self.eval_envs.remotes[0].send(("render", None))
-                frame = self.eval_envs.remotes[0].recv()
-                
-                # 에이전트 정보를 표시할 이미지 생성
-                info_frame = np.ones((frame.shape[0], 300, 3), dtype=np.uint8) * 255
-                
-                # 에이전트 정보 텍스트 추가
-                for agent_id in range(self.num_agents):
-                    pos = eval_obs[0, agent_id, 2:4]
-                    if self.tdd_args is not None:
-                        int_reward_SD = float(int_rew_SD[0][agent_id])
-                        if self.tdd_args["wm"]["use_wm"]:
-                            int_reward_WM = float(int_rew_WM[0][agent_id])
-                    ext_reward = float(eval_rewards[0][agent_id][0])
+            # 비디오/GIF 생성 (각 스레드별로)
+            for eval_i in range(n_eval_rollout_threads):
+                if one_episode_len[eval_i] % 4 == 0:  # 4 스텝마다만 프레임 저장
+                    self.eval_envs.remotes[eval_i].send(("render", None))
+                    frame = self.eval_envs.remotes[eval_i].recv()
                     
-                    # 각 정보를 별도의 텍스트로 표시
-                    cv2.putText(info_frame, f"Agent {agent_id}", (5, 15 + agent_id * 100), # 5, 15 + agent_id * 100은 텍스트의 위치
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)   # 0.14가 크기
-                    cv2.putText(info_frame, f"Position: ({pos[0]:.2f}, {pos[1]:.2f})", (5, 35 + agent_id * 100), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                    if self.tdd_args is not None:
-                        cv2.putText(info_frame, f"Intrinsic Reward_SD: {int_reward_SD:.4f}", (5, 55 + agent_id * 100), 
+                    # 에이전트 정보를 표시할 이미지 생성 (폭을 600으로 증가)
+                    info_frame = np.ones((frame.shape[0], 600, 3), dtype=np.uint8) * 255
+                    
+                    # 에이전트 정보 텍스트 추가 (eval_i번째 스레드의 데이터 사용)
+                    for agent_id in range(self.num_agents):
+                        pos = eval_obs[eval_i, agent_id, 2:4]
+                        obs = eval_obs[eval_i, agent_id]
+                        if self.tdd_args is not None:
+                            int_reward_SD = float(int_rew_SD[eval_i][agent_id])
+                            if self.tdd_args["wm"]["use_wm"]:
+                                int_reward_WM = float(int_rew_WM[eval_i][agent_id])
+                        ext_reward = float(eval_rewards[eval_i][agent_id][0])
+                        
+                        # Target 액션 (actor policy 출력)
+                        if self.algo_args["train"]["use_hisac"] and targets is not None:
+                            target = targets[eval_i, agent_id, 0] if len(targets.shape) == 3 else targets[eval_i, agent_id]
+                            target_str = f"Landmark {int(target)}"
+                        else:
+                            target_str = "N/A"
+                        
+                        # ORCA 액션 (force 기반)
+                        action = eval_actions[eval_i, agent_id]
+                        if self.algo_args["train"]["use_hisac"]:
+                            # ORCA force 액션: [no_action, left, right, down, up]
+                            action_str = f"[{action[0]:.2f}, {action[1]:.2f}, {action[2]:.2f}, {action[3]:.2f}, {action[4]:.2f}]"
+                        else:
+                            if len(action.shape) == 0 or action.size == 1:
+                                action_str = f"{action:.2f}"
+                            else:
+                                action_str = f"[{', '.join(f'{v:.2f}' for v in action[:5])}]"
+                        
+                        # 각 정보를 별도의 텍스트로 표시
+                        # observation 차원에 따라 필요한 공간이 달라지므로 충분한 간격 확보
+                        y_offset = agent_id * 350  # 간격을 350으로 증가
+                        
+                        cv2.putText(info_frame, f"Agent {agent_id}", (5, 15 + y_offset), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                        if self.tdd_args["wm"]["use_wm"]:
-                            cv2.putText(info_frame, f"Intrinsic Reward_WM: {int_reward_WM:.4f}", (5, 75 + agent_id * 100), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                    cv2.putText(info_frame, f"Extrinsic Reward: {ext_reward:.4f}", (5, 95 + agent_id * 100), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                
-                # 원본 프레임과 정보 프레임 합치기
-                combined_frame = np.hstack((frame, info_frame))
-                gif_frames.append(combined_frame)
-                
-                if video_writer is None:
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    frame_height, frame_width = combined_frame.shape[:2]
-                    video_writer = cv2.VideoWriter(
-                        os.path.join(temp_eval_data_dir, f'eval_video.mp4'),
-                        fourcc,
-                        5,  # FPS를 10에서 5로 줄임
-                        (frame_width, frame_height)
-                    )
-                
-                frame_bgr = cv2.cvtColor(combined_frame, cv2.COLOR_RGB2BGR)
-                video_writer.write(frame_bgr)   # 가끔 여기서 
+                        cv2.putText(info_frame, f"Position: ({pos[0]:.2f}, {pos[1]:.2f})", (5, 35 + y_offset), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                        
+                        # Observation 정보를 여러 줄로 표시
+                        cv2.putText(info_frame, "Obs:", (5, 55 + y_offset), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                        
+                        # observation 차원에 맞춰 동적으로 표시 (각 줄에 6개씩)
+                        obs_dim = len(obs)
+                        num_lines = (obs_dim + 5) // 6  # 필요한 줄 수 계산 (올림)
+                        for i in range(num_lines):
+                            start_idx = i * 6
+                            end_idx = min((i + 1) * 6, obs_dim)
+                            if start_idx < obs_dim:  # 유효한 인덱스인지 확인
+                                obs_values = [f'{obs[j]:.2f}' for j in range(start_idx, end_idx)]
+                                obs_line = ', '.join(obs_values)
+                                cv2.putText(info_frame, f"  {obs_line}", (5, 75 + i * 15 + y_offset), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)
+                        
+                        # observation 표시 후 다음 정보들의 y 위치 조정
+                        info_y_offset = 75 + num_lines * 15 + 20
+                        cv2.putText(info_frame, f"Target: {target_str}", (5, info_y_offset + y_offset), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                        cv2.putText(info_frame, f"ORCA Action: {action_str}", (5, info_y_offset + 20 + y_offset), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1)
+                        cv2.putText(info_frame, f"Extrinsic Reward: {ext_reward:.4f}", (5, info_y_offset + 40 + y_offset), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                        if self.tdd_args is not None:
+                            cv2.putText(info_frame, f"Intrinsic Reward_SD: {int_reward_SD:.4f}", (5, info_y_offset + 60 + y_offset), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                            if self.tdd_args["wm"]["use_wm"]:
+                                cv2.putText(info_frame, f"Intrinsic Reward_WM: {int_reward_WM:.4f}", (5, info_y_offset + 80 + y_offset), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                    
+                    
+                    # 원본 프레임과 정보 프레임 합치기
+                    combined_frame = np.hstack((frame, info_frame))
+                    gif_frames_list[eval_i].append(combined_frame)
+                    
+                    if video_writer_list[eval_i] is None:
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        frame_height, frame_width = combined_frame.shape[:2]
+                        video_writer_list[eval_i] = cv2.VideoWriter(
+                            os.path.join(temp_eval_data_dir, f'eval_video_env_{eval_i}.mp4'),
+                            fourcc,
+                            5,
+                            (frame_width, frame_height)
+                        )
+                    
+                    frame_bgr = cv2.cvtColor(combined_frame, cv2.COLOR_RGB2BGR)
+                    video_writer_list[eval_i].write(frame_bgr) 
                 
             eval_dones_env = np.all(eval_dones, axis=1)
 
@@ -1518,12 +1632,12 @@ class OffPolicyBaseRunner:
                                             self.env_args["map_size"],
                                             step=cur_step,
                                             warmup=False)
-                    # 비디오/GIF 저장
-                    if video_writer is not None:
-                        video_writer.release()
-                        imageio.mimsave(os.path.join(temp_eval_data_dir, f'eval_animation.gif'), gif_frames, duration=0.2)  # duration 증가
-                    else:
-                        raise AssertionError("video_writer is None")
+                    
+                    # 비디오/GIF 저장 (각 스레드별로)
+                    if video_writer_list[eval_i] is not None:
+                        video_writer_list[eval_i].release()
+                        imageio.mimsave(os.path.join(temp_eval_data_dir, f'eval_animation_env_{eval_i}.gif'), 
+                                      gif_frames_list[eval_i], duration=0.2)
                     eval_episode += 1
                     
                     if "smac" in self.args["env"]:
@@ -1547,8 +1661,8 @@ class OffPolicyBaseRunner:
                 if not np.all(eval_dones_env):
                     raise AssertionError("eval_dones_env is not all True")
                 rollout_data[eval_i] = {agent_id: [] for agent_id in range(self.num_agents)}
-                gif_frames = []
-                video_writer = None
+                gif_frames_list = [[] for _ in range(n_eval_rollout_threads)]
+                video_writer_list = [None for _ in range(n_eval_rollout_threads)]
                 temp_rollout_buffer = [[] for _ in range(self.num_agents)]
             
             if eval_episode >= self.algo_args["eval"]["eval_episodes"]:
@@ -1620,8 +1734,9 @@ class OffPolicyBaseRunner:
                     "eval_average_episode_length", eval_avg_len, cur_step
                 )
                 break
-        if self.tdd_args["wm"]["use_wm"]:
-            self.wm_runner.prev_states = None
+        if self.tdd_args is not None:
+            if self.tdd_args["wm"]["use_wm"]:
+                self.wm_runner.prev_states = None
         del rollout_data, temp_rollout_buffer
 
     @torch.no_grad()
@@ -1923,4 +2038,4 @@ class OffPolicyBaseRunner:
         """환경 정보 디버깅 출력"""
         print("share_observation_space: ", self.envs.share_observation_space)
         print("observation_space: ", self.envs.observation_space)
-        print("action_space: ", self.envs.action_space)
+        print("action_space: ", self.envs.action_space if not self.algo_args["train"]["use_hisac"] else [Discrete(self.num_agents)] * self.num_agents)

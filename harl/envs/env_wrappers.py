@@ -207,7 +207,8 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                     
                     # 랜드마크 개수를 1-3개 사이에서 랜덤하게 변경
                     import random
-                    new_num_landmarks = random.randint(1, 3)
+                    # new_num_landmarks = random.randint(1, 3)
+                    new_num_landmarks = 3
                     
                     # 기존 랜드마크 제거
                     for landmark in current_landmarks:
@@ -230,7 +231,8 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                         landmark.collide = False
                         landmark.movable = False
                         landmark.size = 0.03  # landmark_size from config
-                        landmark.weight = random.randint(1, 3)  # 1, 2, 3 중 하나의 값을 랜덤하게 선택
+                        # landmark.weight = random.randint(1, 3)  # 1, 2, 3 중 하나의 값을 랜덤하게 선택
+                        landmark.weight = 1
                         if landmark.weight == 1:
                             landmark.color = np.array([0.0, 0.0, 1.0])
                         elif landmark.weight == 2:
@@ -312,12 +314,12 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
             
             """ weight 기반 추가 리워드 계산 """
             if len(landmarks) > 0 and len(ob) > 0:
-                additional_reward = 0.0
                 agent_positions = []
+                agent_rewards = np.zeros(len(ob))  # 각 에이전트별 추가 리워드
                 
                 # 설정 가능한 파라미터들
                 landmark_sparse_reward = 5.0  # 랜드마크 sparse 리워드 (조정 가능)
-                landmark_detection_radius_multiplier = 1.2  # 랜드마크 감지 반경 배수 (조정 가능)
+                landmark_detection_radius_multiplier = 2.0  # 랜드마크 감지 반경 배수 (조정 가능)
                 
                 # 에이전트 위치 수집 (obs에서 에이전트 위치 추출)
                 for agent_idx in range(len(ob)):
@@ -332,34 +334,53 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                         landmark_weight = landmark['weight']
                         landmark_size = landmark['size']
                         
-                        # 랜드마크 주변에 있는 에이전트 수 계산
-                        agents_near_landmark = 0
-                        # total_distance = 0.0
+                        # 랜드마크 주변에 있는 에이전트들의 인덱스와 거리 저장
+                        agents_near_landmark = []
                         
-                        for agent_pos in agent_positions:
+                        for agent_idx, agent_pos in enumerate(agent_positions):
                             distance = np.sqrt(np.sum((agent_pos - landmark_pos)**2))
                             detection_radius = landmark_size * landmark_detection_radius_multiplier
                             
                             if distance <= detection_radius:
-                                agents_near_landmark += 1
-                                # total_distance += distance
+                                agents_near_landmark.append((agent_idx, distance))
                         
                         # weight만큼의 에이전트가 모였을 때 추가 리워드
                         required_agents = int(landmark_weight)
-                        if agents_near_landmark <= required_agents and agents_near_landmark > 0:
-                            # 거리 기반 차등 리워드 (더 가까이 있을수록 더 많은 리워드)
-                            # avg_distance = total_distance / agents_near_landmark if agents_near_landmark > 0 else 0
-                            # distance_factor = max(0.5, 1.0 - (avg_distance / detection_radius))
-                            
-                            additional_reward += landmark_sparse_reward * landmark_weight
-                            
-                            # 디버깅을 위한 로그 (필요시 주석 해제)
-                            # print(f"Landmark {landmark_idx}: weight={landmark_weight:.1f}, agents={agents_near_landmark}, reward={landmark_reward:.2f}")
+                        agents_near_landmark_count = len(agents_near_landmark)
+                        
+                        # 리워드 계산: 에이전트 수가 많을수록 감소
+                        if agents_near_landmark_count > 0:
+                            # 최대 리워드: weight만큼의 에이전트만 있을 때
+                            if agents_near_landmark_count == required_agents:
+                                # 최적 상태: 100% 리워드
+                                base_reward = landmark_sparse_reward * landmark_weight
+                                # 각 에이전트에 균등하게 분배
+                                reward_per_agent = base_reward / agents_near_landmark_count
+                                for agent_idx, _ in agents_near_landmark:
+                                    agent_rewards[agent_idx] += reward_per_agent
+                            elif agents_near_landmark_count < required_agents:
+                                # 부족한 경우: 경고 차원에서 페널티
+                                base_reward = landmark_sparse_reward * landmark_weight * 0.5
+                                reward_per_agent = base_reward / agents_near_landmark_count
+                                for agent_idx, _ in agents_near_landmark:
+                                    agent_rewards[agent_idx] += reward_per_agent
+                            else:
+                                # 과도한 경우: 리워드 감소 (2명 이상일 때 1명보다 적게)
+                                # 예: 1명일 때 100%, 2명일 때 30%, 3명 이상일 때 0%
+                                if agents_near_landmark_count == required_agents + 1:
+                                    # 2명일 때
+                                    base_reward = landmark_sparse_reward * landmark_weight * 0.3
+                                    reward_per_agent = base_reward / agents_near_landmark_count
+                                    for agent_idx, _ in agents_near_landmark:
+                                        agent_rewards[agent_idx] += reward_per_agent
+                                # 3명 이상일 때는 리워드 없음
                 
-                # 추가 리워드를 기존 리워드에 더함
-                if additional_reward > 0:
+                # Line 378-381을 다음으로 변경
+                # 모든 에이전트가 동일한 추가 리워드를 받도록 수정
+                total_additional_reward = np.sum(agent_rewards)
+                if total_additional_reward > 0:
                     for agent_idx in range(len(reward)):
-                        reward[agent_idx] = [additional_reward + reward[agent_idx][0]]
+                        reward[agent_idx] = [total_additional_reward + reward[agent_idx][0]]
             
             
             # 랜드마크와의 상대변위 처리 및 시야 범위 적용

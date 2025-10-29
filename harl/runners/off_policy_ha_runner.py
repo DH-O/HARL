@@ -73,7 +73,7 @@ class OffPolicyHARunner(OffPolicyBaseRunner):
                     else None,
                 )
                 next_actions.append(next_action)
-                if self.algo_args["train"]["use_tdd"]:
+                if self.args["use_tdd"]:
                     if self.tdd_runner is not None and self.tdd_args["train"]["use_state_entropy"]:
                         # 약 1000개의 sp_next_obs (n_rollout_threads, batch_size, obs의 차원)
                         # 각각의 스레드에 대해 temporal distance top k를 찾아야 한다.

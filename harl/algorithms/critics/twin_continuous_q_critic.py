@@ -31,7 +31,7 @@ class TwinContinuousQCritic:
         self.act_space = act_space
         self.num_agents = num_agents
         self.state_type = state_type
-        self.action_type = act_space[0].__class__.__name__
+        self.action_type = act_space[0].__class__.__name__  # act_space가 리스트형태고, 예시를 들자면 [Box(0.0, 1.0, (5,), float32), ...]
         self.critic = ContinuousQNet(args, share_obs_space, act_space, wm_models, device)
         self.critic2 = ContinuousQNet(args, share_obs_space, act_space, wm_models, device)
         self.target_critic = deepcopy(self.critic)

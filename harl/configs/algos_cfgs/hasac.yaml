@@ -1,9 +1,9 @@
 # This is the configuration file for the HASAC algorithm.
 seed:
   # whether to use the specified seed
-  seed_specify: True
+  seed_specify: False
   # seed
-  seed: 3514
+  seed: 1
 device:
   # whether to use CUDA
   cuda: True
@@ -19,11 +19,13 @@ train:
   # use_warmup
   use_warmup: True
   # use tdd
-  use_tdd: True
+  # use_tdd: True
+  # use hisac
+  use_hisac: True
   # number of warmup steps
-  warmup_steps: 300000 # 10^4이 원래 값이다. 1000 * max_cycles수로 진행중
+  warmup_steps: 500000 # 10^4이 원래 값이다. 1000 * max_cycles수로 진행중
   # number of steps per train
-  train_interval: 500 # HASAC 원코드에서는 50이었음
+  train_interval: 50 # HASAC 원코드에서는 50이었음
   # ratio of training iterations to train_interval
   update_per_train: 1
   # logging interval (currently unused)
@@ -67,14 +69,14 @@ model:
   gain: 0.01
   # optimizer parameters
   # actor learning rate
-  lr: 0.0005
+  lr: 0.0005  # 기존 값은 0.0005
   # critic learning rate
-  critic_lr: 0.0005
+  critic_lr: 0.0005  # 기존 값은 0.0005
 algo:
   # whether to auto-tune temperature
-  auto_alpha: True  # tuned config에 의하면 이게 맞다.
+  auto_alpha: True  # MPE에서 continuous action space인 경우에는 True.
   # temperature parameter
-  alpha: 0.2  # 내 생각엔 tuned config 보고 내가 바꾼 것 같다.
+  alpha: 0.2  # 내 생각엔 tuned config 보고 내가 0.2로 바꿨다가, 바꾼 것 같다. 지금은 SMAC에서 본 Discrete에 맞춰서 0.002 사용
   # alpha learning rate
   alpha_lr: 0.0003
   # discount factor
@@ -94,7 +96,7 @@ algo:
   # huber delta
   huber_delta: 10.0
   # whether to share parameter among actors
-  share_param: True
+  share_param: False
   # whether to use a fixed optimisation order
   fixed_order: False
 logger:

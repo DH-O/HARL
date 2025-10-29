@@ -6,7 +6,7 @@ import yaml
 from uu import Error
 
 
-def get_defaults_yaml_args(algo, env, use_tdd=1):
+def get_defaults_yaml_args(algo, env, use_tdd=0):
     """Load config file for user-specified algo and env.
     Args:
         algo: (str) Algorithm name.
